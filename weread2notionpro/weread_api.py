@@ -50,9 +50,7 @@ class WeReadApi:
     # ========== 兼容原有 Weread.py / read_time.py 调用的方法 ==========
     
     def get_notebooklist(self):
-        """获取有笔记的书籍列表（兼容原接口）
-        原返回: list of books with sort, bookId, book.title 等
-        """
+        """获取有笔记的书籍列表（兼容原接口）"""
         all_books = []
         last_sort = None
         while True:
@@ -65,19 +63,14 @@ class WeReadApi:
         return all_books
     
     def get_bookmark_list(self, bookId):
-        """获取某本书的划线列表（兼容原接口）
-        原返回: data.get("updated") 列表
-        """
+        """获取某本书的划线列表（兼容原接口）"""
         data = self._post("/book/bookmarklist", bookId=bookId)
         return data.get("updated", [])
     
     def get_review_list(self, bookId):
-        """获取某本书的想法/点评列表（兼容原接口）
-        原返回: 经过 map 处理后的 reviews 列表
-        """
+        """获取某本书的想法/点评列表（兼容原接口）"""
         data = self._post("/review/list/mine", bookid=bookId)
         reviews_raw = data.get("reviews", [])
-        # 兼容原 weread.py 中的处理逻辑：type==4 的点评补充 chapterUid
         reviews = list(map(lambda x: x.get("review"), reviews_raw)) if reviews_raw else []
         reviews = [
             {"chapterUid": 1000000, **x} if x.get("type") == 4 else x
@@ -86,15 +79,10 @@ class WeReadApi:
         return reviews
     
     def get_chapter_info(self, bookId):
-        """获取书籍章节目录（兼容原接口）
-        原返回: {chapterUid: {...}, ...} 的字典
-        原还额外追加了一个 "点评" 节点 (chapterUid=1000000)
-        """
+        """获取书籍章节目录（兼容原接口）"""
         data = self._post("/book/chapterinfo", bookId=bookId)
         chapters = data.get("chapters", [])
-        # 构建 {chapterUid: chapter} 字典
         chapter_dict = {item["chapterUid"]: item for item in chapters}
-        # 追加点评节点（与原逻辑一致）
         chapter_dict[1000000] = {
             "chapterUid": 1000000,
             "chapterIdx": 1000000,
@@ -109,17 +97,8 @@ class WeReadApi:
         """获取阅读时长数据（兼容 read_time.py）
         原返回: {"readTimes": {timestamp: duration, ...}}
         """
-        # 通过书架同步获取阅读时长信息
-        data = self._post("/shelf/sync")
-        books = data.get("books", [])
-        read_times = {}
-        for book in books:
-            progress = book.get("progress", {})
-            reading_time = progress.get("readingTime")
-            last_read_time = progress.get("lastReadTime")
-            if reading_time and last_read_time:
-                read_times[int(last_read_time)] = int(reading_time)
-        return {"readTimes": read_times}
+        data = self._post("/readdata/detail", mode="overall")
+        return data
     
     # ========== 新增 API Key 专属方法 ==========
     
@@ -188,6 +167,6 @@ if __name__ == "__main__":
         
         print("测试 get_api_data...")
         api_data = api.get_api_data()
-        print(f"  readTimes 条目: {len(api_data.get('readTimes', {}))}")
+        print(f"  readTimes: {api_data.get('readTimes')}")
     
     print("\n全部测试通过！")
