@@ -230,7 +230,7 @@ class NotionHelper:
             "最后同步时间": {"date": {"start": pendulum.now("Asia/Shanghai").isoformat()}},
             "NotinToken": {"rich_text": [{"type": "text", "text": {"content": os.getenv("NOTION_TOKEN")}}]},
             "NotinPage": {"rich_text": [{"type": "text", "text": {"content": os.getenv("NOTION_PAGE")}}]},
-            "WeReadCookie": {"rich_text": [{"type": "text", "text": {"content": os.getenv("WEREAD_COOKIE")}}]},
+            "WeReadCookie": {"rich_text": [{"type": "text", "text": {"content": os.getenv("WEREAD_API_KEY", "")}}]},
         }
         if existing_pages:
             remote_properties = existing_pages[0].get("properties")
