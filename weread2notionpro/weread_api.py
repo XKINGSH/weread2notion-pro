@@ -50,16 +50,26 @@ class WeReadApi:
     # ========== 兼容原有 Weread.py / read_time.py 调用的方法 ==========
     
     def get_notebooklist(self):
-        """获取有笔记的书籍列表（兼容原接口）"""
+        """获取有笔记的书籍列表（兼容原接口，带防死循环保护）"""
         all_books = []
         last_sort = None
-        while True:
+        page = 0
+        max_pages = 50
+        while page < max_pages:
+            page += 1
             data = self._post("/user/notebooks", count=100, lastSort=last_sort)
             books = data.get("books", [])
+            if not books:
+                break
             all_books.extend(books)
             if not data.get("hasMore"):
                 break
-            last_sort = books[-1].get("sort") if books else None
+            new_sort = books[-1].get("sort")
+            if new_sort == last_sort:
+                print(f"  分页异常：第{page}页 sort 未变化，停止分页")
+                break
+            last_sort = new_sort
+        print(f"  获取到 {len(all_books)} 本书")
         return all_books
     
     def get_bookmark_list(self, bookId):

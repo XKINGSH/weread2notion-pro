@@ -62,55 +62,60 @@ def insert_to_notion(page_id, timestamp, duration):
         )
 
 
-def get_file():
-    # 设置文件夹路径
-    folder_path = "./OUT_FOLDER"
-
-    # 检查文件夹是否存在
-    if os.path.exists(folder_path) and os.path.isdir(folder_path):
-        entries = os.listdir(folder_path)
-
-        file_name = entries[0] if entries else None
-        return file_name
-    else:
-        print("OUT_FOLDER does not exist.")
-        return None
-
-HEATMAP_GUIDE = "https://mp.weixin.qq.com/s?__biz=MzI1OTcxOTI4NA==&mid=2247484145&idx=1&sn=81752852420b9153fc292b7873217651&chksm=ea75ebeadd0262fc65df100370d3f983ba2e52e2fcde2deb1ed49343fbb10645a77570656728&token=157143379&lang=zh_CN#rd"
-
-
 notion_helper = NotionHelper()
 weread_api = WeReadApi()
+
+
 def main():
-    image_file = get_file()
-    if image_file:
-        image_url = f"https://raw.githubusercontent.com/{os.getenv('REPOSITORY')}/{os.getenv('REF').split('/')[-1]}/OUT_FOLDER/{image_file}"
-        heatmap_url = f"https://heatmap.malinkang.com/?image={image_url}"
-        if notion_helper.heatmap_block_id:
-            response = notion_helper.update_heatmap(
-                block_id=notion_helper.heatmap_block_id, url=heatmap_url
-            )
-        else:
-            print(f"更新热力图失败，没有添加热力图占位。具体参考：{HEATMAP_GUIDE}")
-    else:
-        print(f"更新热力图失败，没有生成热力图。具体参考：{HEATMAP_GUIDE}")
+    print("开始同步阅读时长...")
     api_data = weread_api.get_api_data()
-    readTimes = {int(key): value for key, value in api_data.get("readTimes").items()}
+    read_times = api_data.get("readTimes", {})
+    read_times = {int(k): v for k, v in read_times.items()}
+
+    if not read_times:
+        print("警告: 微信读书 API 未返回阅读时长数据")
+        return
+
     now = pendulum.now("Asia/Shanghai").start_of("day")
-    today_timestamp = now.int_timestamp
-    if today_timestamp not in readTimes:
-        readTimes[today_timestamp] = 0
-    readTimes = dict(sorted(readTimes.items()))
+    today_ts = now.int_timestamp
+    if today_ts not in read_times:
+        read_times[today_ts] = 0
+    read_times = dict(sorted(read_times.items()))
+
     results = notion_helper.query_all(database_id=notion_helper.day_database_id)
+    print(f"Notion 中已有 {len(results)} 条阅读记录")
+
+    updated = 0
+    created = 0
     for result in results:
-        timestamp = result.get("properties").get("时间戳").get("number")
-        duration = result.get("properties").get("时长").get("number")
-        id = result.get("id")
-        if timestamp in readTimes:
-            value = readTimes.pop(timestamp)
-            if value != duration:
-                insert_to_notion(page_id=id, timestamp=timestamp, duration=value)
-    for key, value in readTimes.items():
-        insert_to_notion(None, int(key), value)
+        ts_prop = result.get("properties", {}).get("时间戳")
+        dur_prop = result.get("properties", {}).get("时长")
+        if ts_prop and dur_prop:
+            timestamp = ts_prop.get("number")
+            duration = dur_prop.get("number")
+            rid = result.get("id")
+            if timestamp in read_times:
+                value = read_times.pop(timestamp)
+                if value != duration:
+                    insert_to_notion(page_id=rid, timestamp=timestamp, duration=value)
+                    updated += 1
+                    ts_date = format_date(
+                        datetime.utcfromtimestamp(timestamp) + timedelta(hours=8),
+                        "%Y年%m月%d日",
+                    )
+                    print(f"  更新: {ts_date} 时长 {duration} -> {value}")
+
+    for key, value in read_times.items():
+        if value > 0:
+            insert_to_notion(None, int(key), value)
+            created += 1
+            ts_date = format_date(
+                datetime.utcfromtimestamp(key) + timedelta(hours=8), "%Y年%m月%d日"
+            )
+            print(f"  新建: {ts_date} 时长 {value}")
+
+    print(f"同步完成: 更新 {updated} 条, 新建 {created} 条")
+
+
 if __name__ == "__main__":
     main()

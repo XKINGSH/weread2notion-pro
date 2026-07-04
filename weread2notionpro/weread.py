@@ -78,22 +78,18 @@ def check(bookId):
 
 
 def get_sort():
-    """获取database中的最新时间"""
+    """获取database中的最大Sort值"""
     filter = {"property": "Sort", "number": {"is_not_empty": True}}
-    sorts = [
-        {
-            "property": "Sort",
-            "direction": "descending",
-        }
-    ]
     response = notion_helper.query(
         database_id=notion_helper.book_database_id,
         filter=filter,
-        sorts=sorts,
-        page_size=1,
+        page_size=100,
     )
-    if len(response.get("results")) == 1:
-        return response.get("results")[0].get("properties").get("Sort").get("number")
+    if len(response.get("results")) > 0:
+        return max(
+            r.get("properties", {}).get("Sort", {}).get("number") or 0
+            for r in response.get("results")
+        )
     return 0
 
 
@@ -145,7 +141,7 @@ def sort_notes(page_id, chapter, bookmark_list):
 
 def append_blocks(id, contents):
     print(f"笔记数{len(contents)}")
-    before_block_id = ""
+    before_block_id = None
     block_children = notion_helper.get_block_children(id)
     if len(block_children) > 0 and block_children[0].get("type") == "table_of_contents":
         before_block_id = block_children[0].get("id")
@@ -216,7 +212,7 @@ def content_to_block(content):
 
 
 def append_blocks_to_notion(id, blocks, after, contents):
-    if after is None:
+    if not after:
         # 新页面：直接追加到页面底部
         response = notion_helper.append_blocks(
             block_id=id, children=blocks
