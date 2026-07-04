@@ -496,25 +496,26 @@ class NotionHelper:
         results = self.query_all(self.book_database_id)
         books_dict = {}
         for result in results:
-            bookId = get_property_value(result.get("properties").get("BookId"))
+            book_prop = result.get("properties", {}).get("BookId")
+            bookId = get_property_value(book_prop) if book_prop else None
             books_dict[bookId] = {
                 "pageId": result.get("id"),
                 "readingTime": get_property_value(
-                    result.get("properties").get("阅读时长")
+                    result.get("properties", {}).get("阅读时长")
                 ),
                 "category": get_property_value(
-                    result.get("properties").get("书架分类")
+                    result.get("properties", {}).get("书架分类")
                 ),
-                "Sort": get_property_value(result.get("properties").get("Sort")),
+                "Sort": get_property_value(result.get("properties", {}).get("Sort")) if result.get("properties", {}).get("Sort") else 0,
                 "douban_url": get_property_value(
-                    result.get("properties").get("豆瓣链接")
+                    result.get("properties", {}).get("豆瓣链接")
                 ),
                 "cover": result.get("cover"),
                 "myRating": get_property_value(
-                    result.get("properties").get("我的评分")
+                    result.get("properties", {}).get("我的评分")
                 ),
-                "comment": get_property_value(result.get("properties").get("豆瓣短评")),
-                "status": get_property_value(result.get("properties").get("阅读状态")),
+                "comment": get_property_value(result.get("properties", {}).get("豆瓣短评")),
+                "status": get_property_value(result.get("properties", {}).get("阅读状态")),
             }
         return books_dict
 
