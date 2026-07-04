@@ -1,4 +1,4 @@
-from weread2notionpro.notion_helper import NotionHelper
+﻿from weread2notionpro.notion_helper import NotionHelper
 from weread2notionpro.weread_api import WeReadApi
 
 from weread2notionpro.utils import (
@@ -233,8 +233,40 @@ def append_blocks_to_notion(id, blocks, after, contents):
         l.append(content)
     return l
 
+
 weread_api = WeReadApi()
 notion_helper = NotionHelper()
+
+def ensure_book_in_notion(book):
+    """如果书不在 Notion 书架中，自动创建"""
+    bookId = book.get("bookId")
+    existing = check(bookId)
+    if existing:
+        return existing
+    
+    book_info = weread_api.get_book_info(bookId)
+    book_data = book_info.get("book", {})
+    
+    properties = {
+        "书名": {"title": [{"text": {"content": book_data.get("title", "")}}]},
+        "BookId": {"rich_text": [{"text": {"content": bookId}}]},
+        "作者": {"relation": []},
+        "Sort": {"number": book.get("sort", 0)},
+    }
+    
+    cover = book_data.get("cover", "")
+    if cover:
+        properties["封面"] = {"files": [{"name": cover, "type": "external", "external": {"url": cover}}]}
+    
+    response = notion_helper.client.pages.create(
+        parent={"database_id": notion_helper.book_database_id},
+        properties=properties,
+    )
+    page_id = response.get("id")
+    print(f"  自动创建书籍页面: {book_data.get('title', '')} (ID: {page_id})")
+    return page_id
+
+
 def main():
     notion_books = notion_helper.get_all_book()
     books = weread_api.get_notebooklist()
@@ -243,23 +275,28 @@ def main():
             bookId = book.get("bookId")
             title = book.get("book").get("title")
             sort = book.get("sort")
+            
+            # 如果书不在 Notion 中，自动创建
             if bookId not in notion_books:
-                continue
-            if sort == notion_books.get(bookId).get("Sort"):
-                continue
-            pageId = notion_books.get(bookId).get("pageId")
+                print(f"书籍《{title}》不在 Notion 书架中，自动创建...")
+                page_id = ensure_book_in_notion(book)
+            else:
+                page_id = notion_books.get(bookId).get("pageId")
+                # 检查是否有新笔记需要同步
+                if sort == notion_books.get(bookId).get("Sort"):
+                    continue
+            
             print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。")
             chapter = weread_api.get_chapter_info(bookId)
-            bookmark_list = get_bookmark_list(pageId, bookId)
-            reviews = get_review_list(pageId,bookId)
+            bookmark_list = get_bookmark_list(page_id, bookId)
+            reviews = get_review_list(page_id,bookId)
             bookmark_list.extend(reviews)
-            content = sort_notes(pageId, chapter, bookmark_list)
-            append_blocks(pageId, content)
+            content = sort_notes(page_id, chapter, bookmark_list)
+            append_blocks(page_id, content)
             properties = {
                 "Sort":get_number(sort)
             }
-            notion_helper.update_book_page(page_id=pageId,properties=properties)
+            notion_helper.update_book_page(page_id=page_id,properties=properties)
 
 if __name__ == "__main__":
     main()
-
