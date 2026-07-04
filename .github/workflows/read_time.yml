@@ -48,7 +48,7 @@ jobs:
       - name: Set default year if not provided
         run: echo "YEAR=$(date +"%Y")" >> $GITHUB_ENV
         if: env.YEAR == ''
-      - name: weread heatmap (skip - requires expired WEREAD_COOKIE)
-        run: echo "Skipped: github_heatmap requires a valid WEREAD_COOKIE. Use our API Key approach instead."
+      - name: weread heatmap (skip)
+        run: echo Skipped
       - name: read time sync
         run: python -m weread2notionpro.read_time
