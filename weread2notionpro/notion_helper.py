@@ -324,6 +324,26 @@ class NotionHelper:
         self.__cache[key] = page_id
         return page_id
 
+    def get_author_relation_id(self, name):
+        """查找或创建作者，返回作者页面ID"""
+        if not name or not self.author_database_id:
+            return None
+        key = f"author_{self.author_database_id}_{name}"
+        if key in self._NotionHelper__cache:
+            return self._NotionHelper__cache.get(key)
+        filter = {"property": "标题", "title": {"equals": name}}
+        response = self.query(database_id=self.author_database_id, filter=filter)
+        if len(response.get("results")) == 0:
+            parent = {"database_id": self.author_database_id, "type": "database_id"}
+            properties = {"标题": get_title(name)}
+            page_id = self.client.pages.create(
+                parent=parent, properties=properties, icon=get_icon(USER_ICON_URL)
+            ).get("id")
+        else:
+            page_id = response.get("results")[0].get("id")
+        self._NotionHelper__cache[key] = page_id
+        return page_id
+
     def insert_bookmark(self, id, bookmark):
         icon = get_icon(BOOKMARK_ICON_URL)
         properties = {

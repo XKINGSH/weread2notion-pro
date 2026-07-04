@@ -238,32 +238,41 @@ weread_api = WeReadApi()
 notion_helper = NotionHelper()
 
 def ensure_book_in_notion(book):
-    """如果书不在 Notion 书架中，自动创建"""
+    """如果书不在 Notion 书架中，自动创建（含完整书籍信息）"""
     bookId = book.get("bookId")
     existing = check(bookId)
     if existing:
         return existing
     
     book_info = weread_api.get_book_info(bookId)
-    book_data = book_info
+    book_data = book_info if book_info else book.get("book", {})
+    
+    title = book_data.get("title", "")
+    author_name = book_data.get("author", "")
+    cover = book_data.get("cover", "")
     
     properties = {
-        "书名": {"title": [{"text": {"content": book_data.get("title", "")}}]},
+        "书名": {"title": [{"text": {"content": title}}]},
         "BookId": {"rich_text": [{"text": {"content": bookId}}]},
-        "作者": {"relation": []},
         "Sort": {"number": book.get("sort", 0)},
     }
     
-    cover = book_data.get("cover", "")
+    # 封面
     if cover:
-        properties["封面"] = {"files": [{"name": cover, "type": "external", "external": {"url": cover}}]}
+        properties["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
+    
+    # 作者（尝试查找或创建）
+    if author_name:
+        author_id = notion_helper.get_author_relation_id(author_name)
+        if author_id:
+            properties["作者"] = {"relation": [{"id": author_id}]}
     
     response = notion_helper.client.pages.create(
         parent={"database_id": notion_helper.book_database_id},
         properties=properties,
     )
     page_id = response.get("id")
-    print(f"  自动创建书籍页面: {book_data.get('title', '')} (ID: {page_id})")
+    print(f"  自动创建书籍页面: {title} (ID: {page_id})")
     return page_id
 
 
@@ -293,10 +302,28 @@ def main():
             bookmark_list.extend(reviews)
             content = sort_notes(page_id, chapter, bookmark_list)
             append_blocks(page_id, content)
-            properties = {
-                "Sort":get_number(sort)
+            # 更新书籍信息（Sort + 封面 + 作者 + 阅读状态等）
+            book_data = book.get("book", {})
+            title = book_data.get("title", "")
+            author_name = book_data.get("author", "")
+            cover = book_data.get("cover", "")
+            
+            update_props = {
+                "Sort": get_number(sort),
             }
-            notion_helper.update_book_page(page_id=page_id,properties=properties)
+            
+            if cover:
+                update_props["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
+            
+            if author_name:
+                author_id = notion_helper.get_author_relation_id(author_name)
+                if author_id:
+                    update_props["作者"] = {"relation": [{"id": author_id}]}
+            
+            # 阅读状态：有笔记标记为"在读"
+            update_props["阅读状态"] = {"select": {"name": "在读"}}
+            
+            notion_helper.update_book_page(page_id=page_id, properties=update_props)
 
 if __name__ == "__main__":
     main()
