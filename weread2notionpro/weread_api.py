@@ -47,105 +47,147 @@ class WeReadApi:
         
         return data
     
-    # ========== 兼容原有 Weread.py 调用的方法 ==========
+    # ========== 兼容原有 Weread.py / read_time.py 调用的方法 ==========
     
     def get_notebooklist(self):
-        """获取有笔记的书籍列表（兼容原接口）"""
-        return self.get_notebook_list()
+        """获取有笔记的书籍列表（兼容原接口）
+        原返回: list of books with sort, bookId, book.title 等
+        """
+        all_books = []
+        last_sort = None
+        while True:
+            data = self._post("/user/notebooks", count=100, lastSort=last_sort)
+            books = data.get("books", [])
+            all_books.extend(books)
+            if not data.get("hasMore"):
+                break
+            last_sort = books[-1].get("sort") if books else None
+        return all_books
     
     def get_bookmark_list(self, bookId):
-        """获取某本书的划线列表（兼容原接口）"""
-        data = self.get_bookmarks(bookId)
-        if isinstance(data, dict):
-            return data.get("bookmarks", [])
-        return data
+        """获取某本书的划线列表（兼容原接口）
+        原返回: data.get("updated") 列表
+        """
+        data = self._post("/book/bookmarklist", bookId=bookId)
+        return data.get("updated", [])
     
     def get_review_list(self, bookId):
-        """获取某本书的想法/点评列表（兼容原接口）"""
-        # 注意：必须使用小写 bookid
+        """获取某本书的想法/点评列表（兼容原接口）
+        原返回: 经过 map 处理后的 reviews 列表
+        """
         data = self._post("/review/list/mine", bookid=bookId)
-        if isinstance(data, dict):
-            return data.get("reviews", [])
-        return data
+        reviews_raw = data.get("reviews", [])
+        # 兼容原 weread.py 中的处理逻辑：type==4 的点评补充 chapterUid
+        reviews = list(map(lambda x: x.get("review"), reviews_raw)) if reviews_raw else []
+        reviews = [
+            {"chapterUid": 1000000, **x} if x.get("type") == 4 else x
+            for x in reviews
+        ]
+        return reviews
     
     def get_chapter_info(self, bookId):
-        """获取书籍章节目录（兼容原接口）"""
+        """获取书籍章节目录（兼容原接口）
+        原返回: {chapterUid: {...}, ...} 的字典
+        原还额外追加了一个 "点评" 节点 (chapterUid=1000000)
+        """
         data = self._post("/book/chapterinfo", bookId=bookId)
-        return data.get("data", [{}])[0].get("updated", []) if data.get("data") else []
+        chapters = data.get("chapters", [])
+        # 构建 {chapterUid: chapter} 字典
+        chapter_dict = {item["chapterUid"]: item for item in chapters}
+        # 追加点评节点（与原逻辑一致）
+        chapter_dict[1000000] = {
+            "chapterUid": 1000000,
+            "chapterIdx": 1000000,
+            "updateTime": 1683825006,
+            "readAhead": 0,
+            "title": "点评",
+            "level": 1,
+        }
+        return chapter_dict
+    
+    def get_api_data(self):
+        """获取阅读时长数据（兼容 read_time.py）
+        原返回: {"readTimes": {timestamp: duration, ...}}
+        """
+        # 通过书架同步获取阅读时长信息
+        data = self._post("/shelf/sync")
+        books = data.get("books", [])
+        read_times = {}
+        for book in books:
+            progress = book.get("progress", {})
+            reading_time = progress.get("readingTime")
+            last_read_time = progress.get("lastReadTime")
+            if reading_time and last_read_time:
+                read_times[int(last_read_time)] = int(reading_time)
+        return {"readTimes": read_times}
     
     # ========== 新增 API Key 专属方法 ==========
     
     def get_notebooks(self, count=100, last_sort=None):
-        """获取有笔记的书籍列表（分页）"""
+        """获取有笔记的书籍列表（分页，单次）"""
         params = {"count": count}
         if last_sort:
             params["lastSort"] = last_sort
-        data = self._post("/user/notebooks", **params)
-        return data
+        return self._post("/user/notebooks", **params)
     
     def get_notebook_list(self):
         """分页获取所有有笔记的书籍"""
         all_books = []
         last_sort = None
-        
         while True:
             data = self.get_notebooks(count=100, last_sort=last_sort)
             all_books.extend(data.get("books", []))
-            
             if not data.get("hasMore"):
                 break
             last_sort = data["books"][-1].get("sort") if data["books"] else None
-            
         return all_books
     
     def get_bookmarks(self, book_id):
         """获取某本书的划线列表"""
-        data = self._post("/book/bookmarklist", bookId=book_id)
-        return data
+        return self._post("/book/bookmarklist", bookId=book_id)
     
     def get_reviews(self, book_id, list_type=11, mine=1, sync_key=0):
         """获取某本书的想法/点评列表"""
-        # 注意：使用小写 bookid 参数
-        data = self._post("/review/list/mine", bookid=book_id)
-        return data
+        return self._post("/review/list/mine", bookid=book_id)
     
     def get_shelf(self):
         """获取书架列表"""
-        data = self._post("/shelf/sync")
-        return data
+        return self._post("/shelf/sync")
     
     def get_book_info(self, book_id):
         """获取书籍基本信息"""
-        data = self._post("/book/info", bookId=book_id)
-        return data
+        return self._post("/book/info", bookId=book_id)
     
     def get_reading_progress(self, book_id):
         """获取阅读进度"""
-        data = self._post("/book/getprogress", bookId=book_id)
-        return data
+        return self._post("/book/getprogress", bookId=book_id)
 
 
 if __name__ == "__main__":
     api = WeReadApi()
-    print("测试笔记本书籍列表...")
+    print("测试 get_notebooklist...")
     notebooks = api.get_notebooklist()
     print(f"  有笔记的书: {len(notebooks)} 本")
     
     if notebooks:
         first_book = notebooks[0]
         book_id = first_book.get("bookId")
-        print(f"\n测试第一本书: {first_book.get('book', {}).get('title')}")
+        print(f"\n第一本书: {first_book.get('book', {}).get('title')}")
         
-        print("测试划线列表...")
+        print("测试 get_bookmark_list...")
         bookmarks = api.get_bookmark_list(book_id)
         print(f"  划线数: {len(bookmarks)}")
         
-        print("测试点评列表...")
+        print("测试 get_review_list...")
         reviews = api.get_review_list(book_id)
         print(f"  点评数: {len(reviews)}")
         
-        print("测试章节目录...")
+        print("测试 get_chapter_info...")
         chapters = api.get_chapter_info(book_id)
-        print(f"  章节数: {len(chapters) if chapters else 0}")
+        print(f"  章节数: {len(chapters)}")
+        
+        print("测试 get_api_data...")
+        api_data = api.get_api_data()
+        print(f"  readTimes 条目: {len(api_data.get('readTimes', {}))}")
     
-    print("\nAPI Key 模式运行正常！")
+    print("\n全部测试通过！")
