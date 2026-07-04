@@ -245,7 +245,7 @@ def ensure_book_in_notion(book):
         return existing
     
     book_info = weread_api.get_book_info(bookId)
-    book_data = book_info.get("book", {})
+    book_data = book_info
     
     properties = {
         "书名": {"title": [{"text": {"content": book_data.get("title", "")}}]},
