@@ -1,5 +1,6 @@
 ﻿from weread2notionpro.notion_helper import NotionHelper
 from weread2notionpro.weread_api import WeReadApi
+from notion_client import errors as notion_errors
 
 from weread2notionpro.utils import (
     get_block,
@@ -296,34 +297,43 @@ def main():
                     continue
             
             print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。")
-            chapter = weread_api.get_chapter_info(bookId)
-            bookmark_list = get_bookmark_list(page_id, bookId)
-            reviews = get_review_list(page_id,bookId)
-            bookmark_list.extend(reviews)
-            content = sort_notes(page_id, chapter, bookmark_list)
-            append_blocks(page_id, content)
-            # 更新书籍信息（Sort + 封面 + 作者 + 阅读状态等）
-            book_data = book.get("book", {})
-            title = book_data.get("title", "")
-            author_name = book_data.get("author", "")
-            cover = book_data.get("cover", "")
-            
-            update_props = {
-                "Sort": get_number(sort),
-            }
-            
-            if cover:
-                update_props["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
-            
-            if author_name:
-                author_id = notion_helper.get_author_relation_id(author_name)
-                if author_id:
-                    update_props["作者"] = {"relation": [{"id": author_id}]}
-            
-            # 阅读状态：有笔记标记为"在读"
-            update_props["阅读状态"] = {"select": {"name": "在读"}}
-            
-            notion_helper.update_book_page(page_id=page_id, properties=update_props)
+            try:
+                chapter = weread_api.get_chapter_info(bookId)
+                bookmark_list = get_bookmark_list(page_id, bookId)
+                reviews = get_review_list(page_id, bookId)
+                bookmark_list.extend(reviews)
+                chapter_content = sort_notes(page_id, chapter, bookmark_list)
+                append_blocks(page_id, chapter_content)
+                
+                # 更新书籍信息
+                book_data = book.get("book", {})
+                author_name = book_data.get("author", "")
+                cover = book_data.get("cover", "")
+                
+                update_props = {"Sort": get_number(sort)}
+                
+                if cover:
+                    update_props["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
+                
+                if author_name:
+                    author_id = notion_helper.get_author_relation_id(author_name)
+                    if author_id:
+                        update_props["作者"] = {"relation": [{"id": author_id}]}
+                
+                update_props["阅读状态"] = {"select": {"name": "在读"}}
+                
+                notion_helper.update_book_page(page_id=page_id, properties=update_props)
+                print(f"  ✅ 《{title}》同步完成")
+            except notion_errors.APIResponseError as e:
+                err_msg = str(e)
+                if "archived ancestor" in err_msg.lower() or "can'" in err_msg or "Can'" in err_msg:
+                    print(f"  ⚠️  《{title}》页面已被归档，跳过（请在Notion中恢复或删除该页面）")
+                else:
+                    print(f"  ❌ 《{title}》同步失败: {err_msg}")
+                continue
+            except Exception as e:
+                print(f"  ❌ 《{title}》同步异常: {e}")
+                continue
 
 if __name__ == "__main__":
     main()

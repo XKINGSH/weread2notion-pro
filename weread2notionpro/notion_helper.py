@@ -508,7 +508,14 @@ class NotionHelper:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def delete_block(self, block_id):
-        return self.client.blocks.delete(block_id=block_id)
+        try:
+            return self.client.blocks.delete(block_id=block_id)
+        except Exception as e:
+            # 忽略已归档页面的删除错误
+            if "archived" in str(e).lower():
+                print(f"  跳过删除已归档块: {block_id}")
+                return None
+            raise
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_all_book(self):
