@@ -149,14 +149,9 @@ def append_blocks(id, contents):
     block_children = notion_helper.get_block_children(id)
     if len(block_children) > 0 and block_children[0].get("type") == "table_of_contents":
         before_block_id = block_children[0].get("id")
-    elif len(block_children) == 0:
-        # 新页面或空页面：直接追加所有块，不使用 after
-        pass
     else:
-        response = notion_helper.append_blocks(
-            block_id=id, children=[get_table_of_contents()]
-        )
-        before_block_id = response.get("results")[0].get("id")
+        # 新页面或没有 TOC 的页面：直接追加，不使用 after
+        before_block_id = None
     blocks = []
     sub_contents = []
     l = []
@@ -221,7 +216,8 @@ def content_to_block(content):
 
 
 def append_blocks_to_notion(id, blocks, after, contents):
-    if not after:
+    if after is None:
+        # 新页面：直接追加到页面底部
         response = notion_helper.append_blocks(
             block_id=id, children=blocks
         )
