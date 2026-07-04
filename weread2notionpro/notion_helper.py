@@ -411,71 +411,23 @@ class NotionHelper:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def query(self, **kwargs):
+        """查询数据库页面（兼容 notion-client 3.x）"""
         kwargs = {k: v for k, v in kwargs.items() if v}
-        # 新版 notion-client (>=3.x): databases.query 已被移除，改用 pages.search
         if "database_id" in kwargs:
             db_id = kwargs.pop("database_id")
             filter_cond = kwargs.pop("filter", None)
-            sorts = kwargs.pop("sorts", None)
-            page_size = kwargs.pop("page_size", 100)
-            start_cursor = kwargs.pop("start_cursor", None)
-            
             all_results = []
-            cursor = start_cursor
-            while True:
-                search_kwargs = {"page_size": page_size}
-                if cursor:
-                    search_kwargs["start_cursor"] = cursor
-                resp = self.client.pages.search(**search_kwargs)
-                # 过滤出属于该 database 且满足 filter 条件的页面
-                for r in resp.get("results", []):
-                    if r.get("parent", {}).get("database_id") != db_id:
+            resp = self.client.search(**kwargs)
+            for r in resp.get("results", []):
+                parent = r.get("parent", {})
+                if parent.get("database_id") != db_id:
+                    continue
+                if filter_cond:
+                    if not self._matches_filter(r, filter_cond):
                         continue
-                    if filter_cond:
-                        if not self._matches_filter(r, filter_cond):
-                            continue
-                    all_results.append(r)
-                if not resp.get("has_more") or len(all_results) >= 10000:
-                    break
-                cursor = resp.get("next_cursor")
+                all_results.append(r)
             return {"results": all_results, "has_more": False}
-        return self.client.pages.search(**kwargs) if kwargs else self.client.pages.search()
-
-    def _matches_filter(self, page, filter_cond):
-        """简易 filter 匹配"""
-        if not isinstance(filter_cond, dict):
-            return True
-        if "and" in filter_cond:
-            return all(self._matches_filter(page, f) for f in filter_cond["and"])
-        if "or" in filter_cond:
-            return any(self._matches_filter(page, f) for f in filter_cond["or"])
-        prop_name = filter_cond.get("property")
-        if not prop_name:
-            return True
-        props = page.get("properties", {})
-        prop_val = props.get(prop_name)
-        if not prop_val:
-            return False
-        if "title" in filter_cond:
-            # 匹配 title 类型
-            if prop_val.get("type") != "title":
-                return False
-            titles = prop_val.get("title", [])
-            if not titles:
-                return False
-            return titles[0].get("plain_text", "") == filter_cond["title"].get("equals", "")
-        if "rich_text" in filter_cond:
-            if prop_val.get("type") != "rich_text":
-                return False
-            texts = prop_val.get("rich_text", [])
-            if not texts:
-                return False
-            return texts[0].get("plain_text", "") == filter_cond["rich_text"].get("equals", "")
-        if "number" in filter_cond:
-            if prop_val.get("type") != "number":
-                return False
-            return prop_val.get("number") == filter_cond["number"].get("equals")
-        return True
+        return self.client.search(**kwargs) if kwargs else self.client.search()
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_block_children(self, id):
