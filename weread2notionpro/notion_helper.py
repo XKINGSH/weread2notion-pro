@@ -412,7 +412,9 @@ class NotionHelper:
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def query(self, **kwargs):
         """查询数据库页面（兼容 notion-client 3.x）"""
-        kwargs = {k: v for k, v in kwargs.items() if v}
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        if not kwargs:
+            return {"results": [], "has_more": False}
         if "database_id" in kwargs:
             db_id = kwargs.pop("database_id")
             filter_cond = kwargs.pop("filter", None)
