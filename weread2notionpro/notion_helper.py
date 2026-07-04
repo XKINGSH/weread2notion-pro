@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import re
 import time
@@ -134,37 +134,21 @@ class NotionHelper:
         """更新数据库"""
         response = self.client.databases.retrieve(database_id=self.book_database_id)
         id = response.get("id")
-        properties = response.get("properties")
+        properties = response.get("properties") or {}
         update_properties = {}
-        if (
-            properties.get("阅读时长") is None
-            or properties.get("阅读时长").get("type") != "number"
-        ):
-            update_properties["阅读时长"] = {"number": {}}
-        if (
-            properties.get("书架分类") is None
-            or properties.get("书架分类").get("type") != "select"
-        ):
-            update_properties["书架分类"] = {"select": {}}
-        if (
-            properties.get("豆瓣链接") is None
-            or properties.get("豆瓣链接").get("type") != "url"
-        ):
-            update_properties["豆瓣链接"] = {"url": {}}
-        if (
-            properties.get("我的评分") is None
-            or properties.get("我的评分").get("type") != "select"
-        ):
-            update_properties["我的评分"] = {"select": {}}
-        if (
-            properties.get("豆瓣短评") is None
-            or properties.get("豆瓣短评").get("type") != "rich_text"
-        ):
-            update_properties["豆瓣短评"] = {"rich_text": {}}
-        """NeoDB先不添加了，现在受众还不广，可能有的小伙伴不知道是干什么的"""
+        prop_checks = [
+            ("阅读时长", "number"),
+            ("书架分类", "select"),
+            ("豆瓣链接", "url"),
+            ("我的评分", "select"),
+            ("豆瓣短评", "rich_text"),
+        ]
+        for prop_name, expected_type in prop_checks:
+            prop = properties.get(prop_name)
+            if prop is None or prop.get("type") != expected_type:
+                update_properties[prop_name] = {expected_type: {}}
         if len(update_properties) > 0:
             self.client.databases.update(database_id=id, properties=update_properties)
-
     def create_database(self):
         title = [
             {
