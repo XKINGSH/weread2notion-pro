@@ -1,4 +1,4 @@
-name: read time sync
+﻿name: read time sync
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
     env:
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
       NOTION_PAGE: ${{ secrets.NOTION_PAGE }}
-      WEREAD_COOKIE: ${{ secrets.WEREAD_COOKIE }}
+      WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
       CC_URL: ${{ secrets.CC_URL }}
       CC_ID: ${{ secrets.CC_ID }}
       CC_PASSWORD: ${{ secrets.CC_PASSWORD }}
@@ -36,9 +36,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: '3.11'
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -48,25 +48,7 @@ jobs:
       - name: Set default year if not provided
         run: echo "YEAR=$(date +"%Y")" >> $GITHUB_ENV
         if: env.YEAR == ''
-      - name: weread heatmap
-        run: |
-          github_heatmap weread  --year $YEAR  --me "${{secrets.NAME}}" --without-type-name --background-color=${{ vars.background_color||'#FFFFFF'}} --track-color=${{ vars.track_color||'#ACE7AE'}} --special-color1=${{ vars.special_color||'#69C16E'}} --special-color2=${{ vars.special_color2||'#549F57'}} --dom-color=${{ vars.dom_color||'#EBEDF0'}} --text-color=${{ vars.text_color||'#000000'}}
-      - name: Rename weread.svg to a random name
-        run: |
-          cd OUT_FOLDER
-          find . -type f ! -name "weread.svg" -exec rm -f {} +
-          cd ..
-          RANDOM_FILENAME=$(uuidgen).svg
-          mv ./OUT_FOLDER/weread.svg ./OUT_FOLDER/$RANDOM_FILENAME
-          echo "Renamed file to $RANDOM_FILENAME"
-      - name: push
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add .
-          git commit -m 'add new heatmap' || echo "nothing to commit"
-          git push || echo "nothing to push"
+      - name: weread heatmap (skip - requires expired WEREAD_COOKIE)
+        run: echo "Skipped: github_heatmap requires a valid WEREAD_COOKIE. Use our API Key approach instead."
       - name: read time sync
-        run: |
-          read_time
-      
+        run: python -m weread2notionpro.read_time
