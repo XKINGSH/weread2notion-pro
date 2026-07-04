@@ -312,7 +312,7 @@ class NotionHelper:
         if key in self.__cache:
             return self.__cache.get(key)
         filter = {"property": "标题", "title": {"equals": name}}
-        response = self.client.databases.query(database_id=id, filter=filter)
+        response = self.query(database_id=id, filter=filter)
         if len(response.get("results")) == 0:
             parent = {"database_id": id, "type": "database_id"}
             properties["标题"] = get_title(name)
@@ -534,7 +534,7 @@ class NotionHelper:
         has_more = True
         start_cursor = None
         while has_more:
-            response = self.client.databases.query(
+            response = self.query(
                 database_id=database_id,
                 filter=filter,
                 start_cursor=start_cursor,
@@ -552,7 +552,7 @@ class NotionHelper:
         has_more = True
         start_cursor = None
         while has_more:
-            response = self.client.databases.query(
+            response = self.query(
                 database_id=database_id,
                 start_cursor=start_cursor,
                 page_size=100,
