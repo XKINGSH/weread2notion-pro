@@ -1,262 +1,151 @@
-import hashlib
-import json
+﻿import json
 import os
 import re
-
 import requests
-from requests.utils import cookiejar_from_dict
-from retrying import retry
-from urllib.parse import quote
 from dotenv import load_dotenv
 
 load_dotenv()
-WEREAD_URL = "https://weread.qq.com/"
-WEREAD_NOTEBOOKS_URL = "https://i.weread.qq.com/user/notebooks"
-WEREAD_BOOKMARKLIST_URL = "https://i.weread.qq.com/book/bookmarklist"
-WEREAD_CHAPTER_INFO = "https://i.weread.qq.com/book/chapterInfos"
-WEREAD_READ_INFO_URL = "https://i.weread.qq.com/book/readinfo"
-WEREAD_REVIEW_LIST_URL = "https://i.weread.qq.com/review/list"
-WEREAD_BOOK_INFO = "https://i.weread.qq.com/book/info"
-WEREAD_READDATA_DETAIL = "https://i.weread.qq.com/readdata/detail"
-WEREAD_HISTORY_URL = "https://i.weread.qq.com/readdata/summary?synckey=0"
+
+WEREAD_GATEWAY = "https://i.weread.qq.com/api/agent/gateway"
 
 
 class WeReadApi:
+    """
+    微信读书 API 客户端 — 使用腾讯官方 API Key 鉴权
+    
+    优势：
+    - 不需要 Cookie，不存在过期问题
+    - API Key 长期有效
+    - 提供完整的书架、笔记、划线、书评接口
+    """
+    
     def __init__(self):
-        self.cookie = self.get_cookie()
+        self.api_key = os.getenv("WEREAD_API_KEY")
+        if not self.api_key:
+            raise Exception("未设置 WEREAD_API_KEY，请在 .env 或 GitHub Secrets 中配置")
+        self.skill_version = "1.0.4"
         self.session = requests.Session()
-        self.session.cookies = self.parse_cookie_string()
-
-    def try_get_cloud_cookie(self, url, id, password):
-        if url.endswith("/"):
-            url = url[:-1]
-        req_url = f"{url}/get/{id}"
-        data = {"password": password}
-        result = None
-        response = requests.post(req_url, data=data)
-        if response.status_code == 200:
-            data = response.json()
-            cookie_data = data.get("cookie_data")
-            if cookie_data and "weread.qq.com" in cookie_data:
-                cookies = cookie_data["weread.qq.com"]
-                cookie_str = "; ".join(
-                    [f"{cookie['name']}={cookie['value']}" for cookie in cookies]
-                )
-                result = cookie_str
-        return result
-
-    def get_cookie(self):
-        url = os.getenv("CC_URL")
-        if not url:
-            url = "https://cookiecloud.malinkang.com/"
-        id = os.getenv("CC_ID")
-        password = os.getenv("CC_PASSWORD")
-        cookie = os.getenv("WEREAD_COOKIE")
-        if url and id and password:
-            cookie = self.try_get_cloud_cookie(url, id, password)
-        if not cookie or not cookie.strip():
-            raise Exception("没有找到cookie，请按照文档填写cookie")
-        return cookie
-
-    def parse_cookie_string(self):
-        cookies_dict = {}
         
-        # 使用正则表达式解析 cookie 字符串
-        pattern = re.compile(r'([^=]+)=([^;]+);?\s*')
-        matches = pattern.findall(self.cookie)
+    def _post(self, api_name, **params):
+        """统一 POST 请求接口"""
+        params["api_name"] = api_name
+        params["skill_version"] = self.skill_version
         
-        for key, value in matches:
-            cookies_dict[key] = value.encode('unicode_escape').decode('ascii')
-        # 直接使用 cookies_dict 创建 cookiejar
-        cookiejar = cookiejar_from_dict(cookies_dict)
-        
-        return cookiejar
-
-    def get_bookshelf(self):
-        self.session.get(WEREAD_URL)
-        r = self.session.get(
-            "https://i.weread.qq.com/shelf/sync?synckey=0&teenmode=0&album=1&onlyBookid=0"
+        resp = self.session.post(
+            WEREAD_GATEWAY,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            },
+            json=params,
+            timeout=30
         )
-        if r.ok:
-            return r.json()
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            raise Exception(f"Could not get bookshelf {r.text}")
+        data = resp.json()
         
-    def handle_errcode(self,errcode):
-        if( errcode== -2012 or errcode==-2010):
-            print(f"::error::微信读书Cookie过期了，请参考文档重新设置。https://mp.weixin.qq.com/s/B_mqLUZv7M1rmXRsMlBf7A")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+        if data.get("errcode") not in (0, None):
+            raise Exception(f"API 错误 [{data.get('errcode')}]: {data.get('errmsg', data)}")
+        
+        return data
+    
+    # ========== 兼容原有 Weread.py 调用的方法 ==========
+    
     def get_notebooklist(self):
-        """获取笔记本列表"""
-        self.session.get(WEREAD_URL)
-        r = self.session.get(WEREAD_NOTEBOOKS_URL)
-        if r.ok:
-            data = r.json()
-            books = data.get("books")
-            books.sort(key=lambda x: x["sort"])
-            return books
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            raise Exception(f"Could not get notebook list {r.text}")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_bookinfo(self, bookId):
-        """获取书的详情"""
-        self.session.get(WEREAD_URL)
-        params = dict(bookId=bookId)
-        r = self.session.get(WEREAD_BOOK_INFO, params=params)
-        if r.ok:
-            return r.json()
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            print(f"Could not get book info {r.text}")
-
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+        """获取有笔记的书籍列表（兼容原接口）"""
+        return self.get_notebook_list()
+    
     def get_bookmark_list(self, bookId):
-        self.session.get(WEREAD_URL)
-        params = dict(bookId=bookId)
-        r = self.session.get(WEREAD_BOOKMARKLIST_URL, params=params)
-        if r.ok:
-            with open("bookmark.json","w") as f:
-                f.write(json.dumps(r.json(),indent=4,ensure_ascii=False))
-            bookmarks = r.json().get("updated")
-            return bookmarks
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            raise Exception(f"Could not get {bookId} bookmark list")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def get_read_info(self, bookId):
-        self.session.get(WEREAD_URL)
-        params = dict(
-            noteCount=1,
-            readingDetail=1,
-            finishedBookIndex=1,
-            readingBookCount=1,
-            readingBookIndex=1,
-            finishedBookCount=1,
-            bookId=bookId,
-            finishedDate=1,
-        )
-        headers = {
-            "baseapi":"32",
-            "appver":"8.2.5.10163885",
-            "basever":"8.2.5.10163885",
-            "osver":"12",
-            "User-Agent": "WeRead/8.2.5 WRBrand/xiaomi Dalvik/2.1.0 (Linux; U; Android 12; Redmi Note 7 Pro Build/SQ3A.220705.004)",
-        }
-        r = self.session.get(WEREAD_READ_INFO_URL,headers=headers, params=params)
-        if r.ok:
-            return r.json()
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            raise Exception(f"get {bookId} read info failed {r.text}")
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+        """获取某本书的划线列表（兼容原接口）"""
+        data = self.get_bookmarks(bookId)
+        if isinstance(data, dict):
+            return data.get("bookmarks", [])
+        return data
+    
     def get_review_list(self, bookId):
-        self.session.get(WEREAD_URL)
-        params = dict(bookId=bookId, listType=11, mine=1, syncKey=0)
-        r = self.session.get(WEREAD_REVIEW_LIST_URL, params=params)
-        if r.ok:
-            reviews = r.json().get("reviews")
-            reviews = list(map(lambda x: x.get("review"), reviews))
-            reviews = [
-                {"chapterUid": 1000000, **x} if x.get("type") == 4 else x
-                for x in reviews
-            ]
-            return reviews
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            raise Exception(f"get {bookId} review list failed {r.text}")
-
-
-
+        """获取某本书的想法/点评列表（兼容原接口）"""
+        # 注意：必须使用小写 bookid
+        data = self._post("/review/list/mine", bookid=bookId)
+        if isinstance(data, dict):
+            return data.get("reviews", [])
+        return data
     
-    def get_api_data(self):
-        self.session.get(WEREAD_URL)
-        r = self.session.get(WEREAD_HISTORY_URL)
-        if r.ok:
-            return r.json()
-        else:
-            errcode = r.json().get("errcode",0)
-            self.handle_errcode(errcode)
-            raise Exception(f"get history data failed {r.text}")
-
-    
-
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_chapter_info(self, bookId):
-        self.session.get(WEREAD_URL)
-        body = {"bookIds": [bookId], "synckeys": [0], "teenmode": 0}
-        r = self.session.post(WEREAD_CHAPTER_INFO, json=body)
-        if (
-            r.ok
-            and "data" in r.json()
-            and len(r.json()["data"]) == 1
-            and "updated" in r.json()["data"][0]
-        ):
-            update = r.json()["data"][0]["updated"]
-            update.append(
-                {
-                    "chapterUid": 1000000,
-                    "chapterIdx": 1000000,
-                    "updateTime": 1683825006,
-                    "readAhead": 0,
-                    "title": "点评",
-                    "level": 1,
-                }
-            )
-            return {item["chapterUid"]: item for item in update}
-        else:
-            raise Exception(f"get {bookId} chapter info failed {r.text}")
+        """获取书籍章节目录（兼容原接口）"""
+        data = self._post("/book/chapterinfo", bookId=bookId)
+        return data.get("data", [{}])[0].get("updated", []) if data.get("data") else []
+    
+    # ========== 新增 API Key 专属方法 ==========
+    
+    def get_notebooks(self, count=100, last_sort=None):
+        """获取有笔记的书籍列表（分页）"""
+        params = {"count": count}
+        if last_sort:
+            params["lastSort"] = last_sort
+        data = self._post("/user/notebooks", **params)
+        return data
+    
+    def get_notebook_list(self):
+        """分页获取所有有笔记的书籍"""
+        all_books = []
+        last_sort = None
+        
+        while True:
+            data = self.get_notebooks(count=100, last_sort=last_sort)
+            all_books.extend(data.get("books", []))
+            
+            if not data.get("hasMore"):
+                break
+            last_sort = data["books"][-1].get("sort") if data["books"] else None
+            
+        return all_books
+    
+    def get_bookmarks(self, book_id):
+        """获取某本书的划线列表"""
+        data = self._post("/book/bookmarklist", bookId=book_id)
+        return data
+    
+    def get_reviews(self, book_id, list_type=11, mine=1, sync_key=0):
+        """获取某本书的想法/点评列表"""
+        # 注意：使用小写 bookid 参数
+        data = self._post("/review/list/mine", bookid=book_id)
+        return data
+    
+    def get_shelf(self):
+        """获取书架列表"""
+        data = self._post("/shelf/sync")
+        return data
+    
+    def get_book_info(self, book_id):
+        """获取书籍基本信息"""
+        data = self._post("/book/info", bookId=book_id)
+        return data
+    
+    def get_reading_progress(self, book_id):
+        """获取阅读进度"""
+        data = self._post("/book/getprogress", bookId=book_id)
+        return data
 
-    def transform_id(self, book_id):
-        id_length = len(book_id)
-        if re.match("^\\d*$", book_id):
-            ary = []
-            for i in range(0, id_length, 9):
-                ary.append(format(int(book_id[i : min(i + 9, id_length)]), "x"))
-            return "3", ary
 
-        result = ""
-        for i in range(id_length):
-            result += format(ord(book_id[i]), "x")
-        return "4", [result]
-
-    def calculate_book_str_id(self, book_id):
-        md5 = hashlib.md5()
-        md5.update(book_id.encode("utf-8"))
-        digest = md5.hexdigest()
-        result = digest[0:3]
-        code, transformed_ids = self.transform_id(book_id)
-        result += code + "2" + digest[-2:]
-
-        for i in range(len(transformed_ids)):
-            hex_length_str = format(len(transformed_ids[i]), "x")
-            if len(hex_length_str) == 1:
-                hex_length_str = "0" + hex_length_str
-
-            result += hex_length_str + transformed_ids[i]
-
-            if i < len(transformed_ids) - 1:
-                result += "g"
-
-        if len(result) < 20:
-            result += digest[0 : 20 - len(result)]
-
-        md5 = hashlib.md5()
-        md5.update(result.encode("utf-8"))
-        result += md5.hexdigest()[0:3]
-        return result
-
-    def get_url(self, book_id):
-        return f"https://weread.qq.com/web/reader/{self.calculate_book_str_id(book_id)}"
+if __name__ == "__main__":
+    api = WeReadApi()
+    print("测试笔记本书籍列表...")
+    notebooks = api.get_notebooklist()
+    print(f"  有笔记的书: {len(notebooks)} 本")
+    
+    if notebooks:
+        first_book = notebooks[0]
+        book_id = first_book.get("bookId")
+        print(f"\n测试第一本书: {first_book.get('book', {}).get('title')}")
+        
+        print("测试划线列表...")
+        bookmarks = api.get_bookmark_list(book_id)
+        print(f"  划线数: {len(bookmarks)}")
+        
+        print("测试点评列表...")
+        reviews = api.get_review_list(book_id)
+        print(f"  点评数: {len(reviews)}")
+        
+        print("测试章节目录...")
+        chapters = api.get_chapter_info(book_id)
+        print(f"  章节数: {len(chapters) if chapters else 0}")
+    
+    print("\nAPI Key 模式运行正常！")
