@@ -342,6 +342,7 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     
     # 时间（完成/最后阅读时间）- 用于年/月/周/日关系
     time_str = book_data.get("时间", "")
+    print(f"  [DEBUG] time_str={repr(time_str)}, finishedDate={repr(book_data.get('finishedDate'))}, lastReadingDate={repr(book_data.get('lastReadingDate'))}")
     if time_str:
         try:
             ts = int(time_str)
@@ -354,6 +355,7 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     
     # 开始阅读时间
     begin_date = book_data.get("开始阅读时间", "")
+    print(f"  [DEBUG] begin_date={repr(begin_date)}, beginReadingDate={repr(book_data.get('beginReadingDate'))}")
     if begin_date:
         try:
             ts = int(begin_date)
