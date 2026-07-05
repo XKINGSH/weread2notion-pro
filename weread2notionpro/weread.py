@@ -475,6 +475,9 @@ def main():
                     except (ValueError, TypeError):
                         pass
                 
+                print("DEBUG update_props keys: " + str(list(update_props.keys())))
+                for k, v in update_props.items():
+                    print("    " + k + ": " + str(v))
                 notion_helper.update_book_page(page_id=page_id, properties=update_props)
                 print(f"  Done syncing: {title}")
             except notion_errors.APIResponseError as e:
