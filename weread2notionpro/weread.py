@@ -294,7 +294,7 @@ def ensure_book_in_notion(book):
         "书名": {"title": [{"text": {"content": title}}]},
         "BookId": {"rich_text": [{"text": {"content": bookId}}]},
         "Sort": {"number": book.get("sort", 0)},
-        "阅读状态": {"select": {"name": status}},
+        "阅读状态": {"status": {"name": status}},
         "阅读时长": {"number": reading_time},
         "阅读天数": {"number": total_read_day},
         "阅读进度": {"number": read_progress},
@@ -440,7 +440,7 @@ def main():
                 
                 update_props = {
                     "Sort": get_number(sort),
-                    "阅读状态": {"select": {"name": status}},
+                    "阅读状态": {"status": {"name": status}},
                     "阅读时长": {"number": reading_time},
                     "阅读天数": {"number": total_read_day},
                     "阅读进度": {"number": read_progress},
