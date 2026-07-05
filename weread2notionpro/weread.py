@@ -243,115 +243,141 @@ notion_helper = NotionHelper()
 
 def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     """插入/更新书籍信息到Notion（对齐原版 book.py 的 insert_book_to_notion 效果）"""
-    # 构建 properties 字典
     properties = {}
     
     # 书名
-    if book_data.get("title"):
-        properties["书名"] = {"title": [{"text": {"content": book_data["title"]}}]}
-    elif title:
-        properties["书名"] = {"title": [{"text": {"content": title}}]}
+    book_title = book_data.get("title") or title or ""
+    if isinstance(book_title, dict):
+        book_title = book_title.get("title", "")
+    if book_title:
+        properties["书名"] = {"title": [{"text": {"content": str(book_title)}}]}
     
     # BookId
     if bookId:
-        properties["BookId"] = {"rich_text": [{"text": {"content": bookId}}]}
+        properties["BookId"] = {"rich_text": [{"text": {"content": str(bookId)}}]}
     
     # Sort
-    properties["Sort"] = {"number": sort}
+    try:
+        properties["Sort"] = {"number": int(sort) if sort else 0}
+    except (ValueError, TypeError):
+        properties["Sort"] = {"number": 0}
     
     # 阅读状态
     status = book_data.get("阅读状态", "想读")
+    if not isinstance(status, str):
+        status = str(status) if status else "想读"
     properties["阅读状态"] = {"status": {"name": status}}
     
     # 阅读时长
     rt = book_data.get("阅读时长")
     if rt is not None:
-        properties["阅读时长"] = {"number": rt}
+        try:
+            properties["阅读时长"] = {"number": int(rt)}
+        except (ValueError, TypeError):
+            pass
     
     # 阅读天数
     rtd = book_data.get("阅读天数")
     if rtd is not None:
-        properties["阅读天数"] = {"number": rtd}
+        try:
+            properties["阅读天数"] = {"number": int(rtd)}
+        except (ValueError, TypeError):
+            pass
     
     # 阅读进度
     rp = book_data.get("阅读进度")
     if rp is not None:
-        properties["阅读进度"] = {"number": rp}
+        try:
+            properties["阅读进度"] = {"number": float(rp)}
+        except (ValueError, TypeError):
+            pass
     
     # 封面
-    if cover and cover.startswith("http"):
+    if cover and isinstance(cover, str) and cover.startswith("http"):
         properties["封面"] = {"files": [{"type": "external", "name": "Cover", "external": {"url": cover}}]}
     
     # 作者
     author_ids = book_data.get("作者", [])
-    if author_ids:
-        properties["作者"] = {"relation": [{"id": aid} for aid in author_ids]}
+    if author_ids and isinstance(author_ids, list):
+        valid_ids = [str(aid) for aid in author_ids if aid]
+        if valid_ids:
+            properties["作者"] = {"relation": [{"id": aid} for aid in valid_ids]}
     
     # 分类
     cat_ids = book_data.get("分类", [])
-    if cat_ids:
-        properties["分类"] = {"relation": [{"id": cid} for cid in cat_ids]}
+    if cat_ids and isinstance(cat_ids, list):
+        valid_cats = [str(cid) for cid in cat_ids if cid]
+        if valid_cats:
+            properties["分类"] = {"relation": [{"id": cid} for cid in valid_cats]}
     
     # 我的评分
     my_rating = book_data.get("我的评分", "")
-    if my_rating:
-        properties["我的评分"] = {"select": {"name": my_rating}}
+    if my_rating and isinstance(my_rating, str) and my_rating.strip():
+        properties["我的评分"] = {"select": {"name": my_rating.strip()}}
     
     # 评分
     rating = book_data.get("评分")
     if rating is not None:
-        properties["评分"] = {"number": rating}
+        try:
+            properties["评分"] = {"number": int(rating)}
+        except (ValueError, TypeError):
+            pass
     
     # 简介
     intro = book_data.get("简介", "")
-    if intro:
-        properties["简介"] = {"rich_text": [{"text": {"content": intro}}]}
+    if intro and isinstance(intro, str) and intro.strip():
+        properties["简介"] = {"rich_text": [{"text": {"content": intro.strip()}}]}
     
     # ISBN
     isbn = book_data.get("ISBN", "")
-    if isbn:
-        properties["ISBN"] = {"rich_text": [{"text": {"content": isbn}}]}
+    if isbn and isinstance(isbn, str) and isbn.strip():
+        properties["ISBN"] = {"rich_text": [{"text": {"content": isbn.strip()}}]}
     
     # 链接
-    weread_url = book_data.get("链接", "") or ("https://weread.qq.com/web/reader/" + (bookId or ""))
-    if weread_url:
-        properties["链接"] = {"url": weread_url}
+    weread_url = book_data.get("链接", "") or ""
+    if not weread_url and bookId:
+        weread_url = "https://weread.qq.com/web/reader/" + str(bookId)
+    if weread_url and isinstance(weread_url, str):
+        properties["链接"] = {"url": weread_url.strip()}
     
-    # 时间（完成/最后阅读时间）
+    # 时间（完成/最后阅读时间）- 用于年/月/周/日关系
     time_str = book_data.get("时间", "")
     if time_str:
         try:
+            ts = int(time_str)
             from datetime import datetime, timezone, timedelta
-            dt = datetime.fromtimestamp(int(time_str), tz=timezone(timedelta(hours=8)))
+            dt = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
             properties["时间"] = {"date": {"start": dt.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
             notion_helper.get_date_relation(properties, dt)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OSError):
             pass
     
     # 开始阅读时间
     begin_date = book_data.get("开始阅读时间", "")
     if begin_date:
         try:
+            ts = int(begin_date)
             from datetime import datetime, timezone, timedelta
-            bd = datetime.fromtimestamp(int(begin_date), tz=timezone(timedelta(hours=8)))
+            bd = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
             properties["开始阅读时间"] = {"date": {"start": bd.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OSError):
             pass
     
     # 最后阅读时间
     last_date = book_data.get("最后阅读时间", "")
     if last_date:
         try:
+            ts = int(last_date)
             from datetime import datetime, timezone, timedelta
-            ld = datetime.fromtimestamp(int(last_date), tz=timezone(timedelta(hours=8)))
+            ld = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
             properties["最后阅读时间"] = {"date": {"start": ld.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OSError):
             pass
     
-    print(f"  Updating book properties: {len(properties)} fields")
+    print(f"  Properties to update: {list(properties.keys())}")
     
     # 更新页面
-    icon = {"type": "external", "external": {"url": cover}}
+    icon = {"type": "external", "external": {"url": cover}} if cover else None
     result = notion_helper.update_page(page_id=page_id, properties=properties, cover=icon)
     return result
 
@@ -545,8 +571,14 @@ def main():
             # 始终更新书籍元信息（对齐原版 book.py 逻辑）
             # 合并三层数据来源：notebook + bookinfo + readinfo
             note_data = book.get("book", {})
+            if not isinstance(note_data, dict):
+                note_data = {}
             book_info = weread_api.get_bookinfo(bookId) if hasattr(weread_api, "get_bookinfo") else {}
+            if not isinstance(book_info, dict):
+                book_info = {}
             read_info = weread_api.get_read_info(bookId) if hasattr(weread_api, "get_read_info") else {}
+            if not isinstance(read_info, dict):
+                read_info = {}
 
             book_data = {}
             book_data.update(note_data)
@@ -593,7 +625,7 @@ def main():
                 cover = BOOK_ICON_URL
 
             author_name = book_data.get("author", "")
-            if author_name:
+            if author_name and isinstance(author_name, str):
                 book_data["作者"] = [
                     aid for aid in [notion_helper.get_author_relation_id(x) for x in author_name.split(" ")]
                     if aid
@@ -602,9 +634,9 @@ def main():
                 book_data["作者"] = []
 
             categories = book_data.get("categories", [])
-            if categories:
+            if categories and isinstance(categories, list):
                 book_data["分类"] = [
-                    cid for cid in [notion_helper.get_category_relation_id(c.get("title", "")) for c in categories]
+                    cid for cid in [notion_helper.get_category_relation_id(c.get("title", "") if isinstance(c, dict) else c) for c in categories]
                     if cid
                 ]
             else:
@@ -623,7 +655,9 @@ def main():
                 print(f"  [ERROR] Sync failed for {title}: {err_msg}")
             continue
         except Exception as e:
+            import traceback
             print(f"  [ERROR] Unexpected error for {title}: {e}")
+            traceback.print_exc()
             continue
 
 if __name__ == "__main__":
