@@ -537,7 +537,7 @@ class NotionHelper:
         if "relation" in filter_cond:
             if prop_type != "relation":
                 return False
-            rel_ids = [r.get("id") for r in prop_val.get("relation", []) if r]
+            rel_ids = [r.get("id") for r in (prop_val.get("relation") or []) if isinstance(r, dict)]
             if filter_cond["relation"].get("contains"):
                 return filter_cond["relation"]["contains"] in rel_ids
             return bool(rel_ids)
