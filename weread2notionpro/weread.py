@@ -13,6 +13,9 @@ from weread2notionpro.utils import (
 )
 
 
+
+RATING_MAP = {"poor": "\u2b50\ufe0f", "fair": "\u2b50\u2b50\u2b50", "good": "\u2b50\u2b50\u2b50\u2b50\u2b50"}
+BOOK_ICON_URL = "https://www.notion.so/icons/book_gray.svg"
 def get_bookmark_list(page_id, bookId):
     """获取我的划线"""
     filter = {
@@ -417,68 +420,87 @@ def main():
                 chapter_content = sort_notes(page_id, chapter, bookmark_list)
                 append_blocks(page_id, chapter_content)
                 
-                # 更新书籍信息（对齐原版 book.py 的 insert_book_to_notion）
+                # 同步划线和笔记（仅当 Sort 有变化时）
+                existing_sort = notion_books.get(bookId, {}).get("Sort")
+                if sort != existing_sort:
+                    chapter = weread_api.get_chapter_info(bookId)
+                    bookmark_list = get_bookmark_list(page_id, bookId)
+                    reviews = get_review_list(page_id, bookId)
+                    bookmark_list.extend(reviews)
+                    chapter_content = sort_notes(page_id, chapter, bookmark_list)
+                    append_blocks(page_id, chapter_content)
+
+                # 始终更新书籍元信息（对齐原版 book.py 逻辑）
                 note_data = book.get("book", {})
-                author_name = note_data.get("author", "")
-                cover = note_data.get("cover", "")
-                reading_time = note_data.get("readingTime", 0)
-                total_read_day = note_data.get("totalReadDay", 0)
-                marked_status = note_data.get("markedStatus", 1)
-                reading_progress = note_data.get("readingProgress", 0)
-                
-                # 计算阅读状态
-                status = "想读"
-                if marked_status == 4:
-                    status = "已读"
-                elif reading_time >= 60:
-                    status = "在读"
-                
+                book_info = weread_api.get_bookinfo(bookId) if hasattr(weread_api, 'get_bookinfo') else {}
+                read_info = weread_api.get_read_info(bookId) if hasattr(weread_api, 'get_read_info') else {}
+
+                book_data = {}
+                book_data.update(note_data)
+                if book_info:
+                    book_data.update(book_info)
+                if read_info:
+                    book_data.update(read_info.get("readDetail", {}))
+                    book_data.update(read_info.get("bookInfo", {}))
+
                 try:
-                    read_progress = 100 if marked_status == 4 else float(reading_progress or 0) / 100
+                    ms = book_data.get("markedStatus", 1)
+                    book_data["阅读进度"] = (
+                        100 if ms == 4 else float(book_data.get("readingProgress", 0) or 0) / 100
+                    )
                 except (ValueError, TypeError):
-                    read_progress = 0
-                
-                update_props = {
-                    "Sort": get_number(sort),
-                    "阅读状态": {"status": {"name": status}},
-                    "阅读时长": {"number": reading_time},
-                    "阅读天数": {"number": total_read_day},
-                    "阅读进度": {"number": read_progress},
-                }
-                
-                # 封面
-                if cover:
-                    cover = cover.replace("/s_", "/t7_")
-                    if cover and cover.strip() and cover.startswith("http"):
-                        update_props["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
-                
-                # 作者
+                    book_data["阅读进度"] = 0
+
+                if ms == 4:
+                    book_data["阅读状态"] = "已读"
+                elif book_data.get("readingTime", 0) >= 60:
+                    book_data["阅读状态"] = "在读"
+                else:
+                    book_data["阅读状态"] = "想读"
+
+                book_data["阅读时长"] = book_data.get("readingTime", 0)
+                book_data["阅读天数"] = book_data.get("totalReadDay", 0)
+                book_data["评分"] = book_data.get("newRating", "")
+                rd = book_data.get("newRatingDetail") or {}
+                mrk = rd.get("myRating", "")
+                book_data["我的评分"] = RATING_MAP.get(mrk, "") if mrk else ""
+                if book_data["阅读状态"] == "已读" and not book_data["我的评分"]:
+                    book_data["我的评分"] = "未评分"
+
+                book_data["时间"] = (
+                    book_data.get("finishedDate")
+                    or book_data.get("lastReadingDate")
+                    or book_data.get("readingBookDate")
+                )
+                book_data["开始阅读时间"] = book_data.get("beginReadingDate")
+                book_data["最后阅读时间"] = book_data.get("lastReadingDate")
+
+                cover = (book_data.get("cover", "") or "").replace("/s_", "/t7_")
+                if not cover or not cover.strip() or not cover.startswith("http"):
+                    cover = BOOK_ICON_URL
+
+                author_name = book_data.get("author", "")
                 if author_name:
-                    author_ids = []
-                    for aname in author_name.split(" "):
-                        aid = notion_helper.get_author_relation_id(aname)
-                        if aid:
-                            author_ids.append(aid)
-                    if author_ids:
-                        update_props["作者"] = {"relation": [{"id": aid} for aid in author_ids]}
-                
-                # Write year/month/week/day relations if we have time info
-                note_data_full = book.get("book", {})
-                finished_date = note_data_full.get("finishedDate")
-                last_date = note_data_full.get("lastReadingDate")
-                time_str = finished_date or last_date
-                if time_str:
-                    try:
-                        from datetime import datetime, timezone, timedelta
-                        td = datetime.fromtimestamp(int(time_str), tz=timezone(timedelta(hours=8)))
-                        notion_helper.get_date_relation(update_props, td)
-                    except (ValueError, TypeError):
-                        pass
-                
-                print("DEBUG update_props keys: " + str(list(update_props.keys())))
-                for k, v in update_props.items():
-                    print("    " + k + ": " + str(v))
-                notion_helper.update_book_page(page_id=page_id, properties=update_props)
+                    book_data["作者"] = [
+                        aid for aid in [notion_helper.get_author_relation_id(x) for x in author_name.split(" ")]
+                        if aid
+                    ]
+                else:
+                    book_data["作者"] = []
+
+                categories = book_data.get("categories", [])
+                if categories:
+                    book_data["分类"] = [
+                        cid for cid in [notion_helper.get_category_relation_id(c.get("title", "")) for c in categories]
+                        if cid
+                    ]
+                else:
+                    book_data["分类"] = []
+
+                book_data["Sort"] = sort
+
+                insert_book_to_notion(book_data, cover, page_id=page_id)
+
                 print(f"  Done syncing: {title}")
             except notion_errors.APIResponseError as e:
                 err_msg = str(e)
