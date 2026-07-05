@@ -347,7 +347,7 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             ts = int(time_str)
             from datetime import datetime, timezone, timedelta
             dt = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
-            properties["时间"] = {"date": {"start": dt.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
+            properties["时间"] = {"date": {"start": dt.strftime("%Y-%m-%d")}}
             notion_helper.get_date_relation(properties, dt)
         except (ValueError, TypeError, OSError):
             pass
@@ -359,7 +359,7 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             ts = int(begin_date)
             from datetime import datetime, timezone, timedelta
             bd = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
-            properties["开始阅读时间"] = {"date": {"start": bd.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
+            properties["开始阅读时间"] = {"date": {"start": bd.strftime("%Y-%m-%d")}}
         except (ValueError, TypeError, OSError):
             pass
     
@@ -370,7 +370,7 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             ts = int(last_date)
             from datetime import datetime, timezone, timedelta
             ld = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
-            properties["最后阅读时间"] = {"date": {"start": ld.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
+            properties["最后阅读时间"] = {"date": {"start": ld.strftime("%Y-%m-%d")}}
         except (ValueError, TypeError, OSError):
             pass
     

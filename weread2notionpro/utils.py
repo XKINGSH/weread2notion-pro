@@ -78,13 +78,13 @@ def get_relation(ids):
 
 
 def get_date(start, end=None):
-    return {
-        "date": {
-            "start": start,
-            "end": end,
-            "time_zone": "Asia/Shanghai",
-        }
-    }
+    result = {"start": start}
+    if end is not None:
+        result["end"] = end
+    # Only set time_zone if both start and end are provided
+    if end is not None:
+        result["time_zone"] = "Asia/Shanghai"
+    return {"date": result}
 
 
 def get_icon(url):
