@@ -1,4 +1,4 @@
-﻿from weread2notionpro.notion_helper import NotionHelper
+from weread2notionpro.notion_helper import NotionHelper
 from weread2notionpro.weread_api import WeReadApi
 from notion_client import errors as notion_errors
 
@@ -241,6 +241,122 @@ def append_blocks_to_notion(id, blocks, after, contents):
 weread_api = WeReadApi()
 notion_helper = NotionHelper()
 
+def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
+    """插入/更新书籍信息到Notion（对齐原版 book.py 的 insert_book_to_notion 效果）"""
+    # 构建 properties 字典
+    properties = {}
+    
+    # 书名
+    if book_data.get("title"):
+        properties["书名"] = {"title": [{"text": {"content": book_data["title"]}}]}
+    elif title:
+        properties["书名"] = {"title": [{"text": {"content": title}}]}
+    
+    # BookId
+    if bookId:
+        properties["BookId"] = {"rich_text": [{"text": {"content": bookId}}]}
+    
+    # Sort
+    properties["Sort"] = {"number": sort}
+    
+    # 阅读状态
+    status = book_data.get("阅读状态", "想读")
+    properties["阅读状态"] = {"status": {"name": status}}
+    
+    # 阅读时长
+    rt = book_data.get("阅读时长")
+    if rt is not None:
+        properties["阅读时长"] = {"number": rt}
+    
+    # 阅读天数
+    rtd = book_data.get("阅读天数")
+    if rtd is not None:
+        properties["阅读天数"] = {"number": rtd}
+    
+    # 阅读进度
+    rp = book_data.get("阅读进度")
+    if rp is not None:
+        properties["阅读进度"] = {"number": rp}
+    
+    # 封面
+    if cover and cover.startswith("http"):
+        properties["封面"] = {"files": [{"type": "external", "name": "Cover", "external": {"url": cover}}]}
+    
+    # 作者
+    author_ids = book_data.get("作者", [])
+    if author_ids:
+        properties["作者"] = {"relation": [{"id": aid} for aid in author_ids]}
+    
+    # 分类
+    cat_ids = book_data.get("分类", [])
+    if cat_ids:
+        properties["分类"] = {"relation": [{"id": cid} for cid in cat_ids]}
+    
+    # 我的评分
+    my_rating = book_data.get("我的评分", "")
+    if my_rating:
+        properties["我的评分"] = {"select": {"name": my_rating}}
+    
+    # 评分
+    rating = book_data.get("评分")
+    if rating is not None:
+        properties["评分"] = {"number": rating}
+    
+    # 简介
+    intro = book_data.get("简介", "")
+    if intro:
+        properties["简介"] = {"rich_text": [{"text": {"content": intro}}]}
+    
+    # ISBN
+    isbn = book_data.get("ISBN", "")
+    if isbn:
+        properties["ISBN"] = {"rich_text": [{"text": {"content": isbn}}]}
+    
+    # 链接
+    weread_url = book_data.get("链接", "") or ("https://weread.qq.com/web/reader/" + (bookId or ""))
+    if weread_url:
+        properties["链接"] = {"url": weread_url}
+    
+    # 时间（完成/最后阅读时间）
+    time_str = book_data.get("时间", "")
+    if time_str:
+        try:
+            from datetime import datetime, timezone, timedelta
+            dt = datetime.fromtimestamp(int(time_str), tz=timezone(timedelta(hours=8)))
+            properties["时间"] = {"date": {"start": dt.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
+            notion_helper.get_date_relation(properties, dt)
+        except (ValueError, TypeError):
+            pass
+    
+    # 开始阅读时间
+    begin_date = book_data.get("开始阅读时间", "")
+    if begin_date:
+        try:
+            from datetime import datetime, timezone, timedelta
+            bd = datetime.fromtimestamp(int(begin_date), tz=timezone(timedelta(hours=8)))
+            properties["开始阅读时间"] = {"date": {"start": bd.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
+        except (ValueError, TypeError):
+            pass
+    
+    # 最后阅读时间
+    last_date = book_data.get("最后阅读时间", "")
+    if last_date:
+        try:
+            from datetime import datetime, timezone, timedelta
+            ld = datetime.fromtimestamp(int(last_date), tz=timezone(timedelta(hours=8)))
+            properties["最后阅读时间"] = {"date": {"start": ld.strftime("%Y-%m-%d"), "time_zone": "Asia/Shanghai"}}
+        except (ValueError, TypeError):
+            pass
+    
+    print(f"  Updating book properties: {len(properties)} fields")
+    
+    # 更新页面
+    icon = {"type": "external", "external": {"url": cover}}
+    result = notion_helper.update_page(page_id=page_id, properties=properties, cover=icon)
+    return result
+
+
+
 def ensure_book_in_notion(book):
     """如果书不在 Notion 书架中，自动创建（含完整书籍信息，对齐原版 book.py 效果）"""
     bookId = book.get("bookId")
@@ -395,123 +511,120 @@ def ensure_book_in_notion(book):
 def main():
     notion_books = notion_helper.get_all_book()
     books = weread_api.get_notebooklist()
-    if books != None:
-        for index, book in enumerate(books):
-            bookId = book.get("bookId")
-            title = book.get("book").get("title")
-            sort = book.get("sort")
-            
-            # 如果书不在 Notion 中，自动创建
-            if bookId not in notion_books:
-                print(f"书籍《{title}》不在 Notion 书架中，自动创建...")
-                page_id = ensure_book_in_notion(book)
-            else:
-                page_id = notion_books.get(bookId).get("pageId")
-                # 检查是否有新笔记需要同步
-                if sort == notion_books.get(bookId).get("Sort"):
-                    continue
-            
-            print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。")
+    if books is None:
+        print("没有获取到书籍列表")
+        return
+    
+    for index, book in enumerate(books):
+        bookId = book.get("bookId")
+        title = book.get("book", {}).get("title") or book.get("title", "未知书籍")
+        sort = book.get("sort")
+        
+        if bookId not in notion_books:
+            print(f"书籍《{title}》不在 Notion 书架中，自动创建...")
+            page_id = ensure_book_in_notion(book)
+            if not page_id:
+                print(f"  创建失败，跳过")
+                continue
+        else:
+            page_id = notion_books.get(bookId).get("pageId")
+            if not page_id:
+                print(f"  pageId 为空，跳过")
+                continue
+        
+        print(f"正在同步《{title}》,一共{len(books)}本，当前是第{index+1}本。")
+        try:
+            # 同步划线和笔记
+            chapter = weread_api.get_chapter_info(bookId)
+            bookmark_list = get_bookmark_list(page_id, bookId)
+            reviews = get_review_list(page_id, bookId)
+            bookmark_list.extend(reviews)
+            chapter_content = sort_notes(page_id, chapter, bookmark_list)
+            append_blocks(page_id, chapter_content)
+
+            # 始终更新书籍元信息（对齐原版 book.py 逻辑）
+            # 合并三层数据来源：notebook + bookinfo + readinfo
+            note_data = book.get("book", {})
+            book_info = weread_api.get_bookinfo(bookId) if hasattr(weread_api, "get_bookinfo") else {}
+            read_info = weread_api.get_read_info(bookId) if hasattr(weread_api, "get_read_info") else {}
+
+            book_data = {}
+            book_data.update(note_data)
+            if book_info:
+                book_data.update(book_info)
+            if read_info:
+                book_data.update(read_info.get("readDetail", {}))
+                book_data.update(read_info.get("bookInfo", {}))
+
             try:
-                chapter = weread_api.get_chapter_info(bookId)
-                bookmark_list = get_bookmark_list(page_id, bookId)
-                reviews = get_review_list(page_id, bookId)
-                bookmark_list.extend(reviews)
-                chapter_content = sort_notes(page_id, chapter, bookmark_list)
-                append_blocks(page_id, chapter_content)
-                
-                # 同步划线和笔记（仅当 Sort 有变化时）
-                existing_sort = notion_books.get(bookId, {}).get("Sort")
-                if sort != existing_sort:
-                    chapter = weread_api.get_chapter_info(bookId)
-                    bookmark_list = get_bookmark_list(page_id, bookId)
-                    reviews = get_review_list(page_id, bookId)
-                    bookmark_list.extend(reviews)
-                    chapter_content = sort_notes(page_id, chapter, bookmark_list)
-                    append_blocks(page_id, chapter_content)
-
-                # 始终更新书籍元信息（对齐原版 book.py 逻辑）
-                note_data = book.get("book", {})
-                book_info = weread_api.get_bookinfo(bookId) if hasattr(weread_api, 'get_bookinfo') else {}
-                read_info = weread_api.get_read_info(bookId) if hasattr(weread_api, 'get_read_info') else {}
-
-                book_data = {}
-                book_data.update(note_data)
-                if book_info:
-                    book_data.update(book_info)
-                if read_info:
-                    book_data.update(read_info.get("readDetail", {}))
-                    book_data.update(read_info.get("bookInfo", {}))
-
-                try:
-                    ms = book_data.get("markedStatus", 1)
-                    book_data["阅读进度"] = (
-                        100 if ms == 4 else float(book_data.get("readingProgress", 0) or 0) / 100
-                    )
-                except (ValueError, TypeError):
-                    book_data["阅读进度"] = 0
-
-                if ms == 4:
-                    book_data["阅读状态"] = "已读"
-                elif book_data.get("readingTime", 0) >= 60:
-                    book_data["阅读状态"] = "在读"
-                else:
-                    book_data["阅读状态"] = "想读"
-
-                book_data["阅读时长"] = book_data.get("readingTime", 0)
-                book_data["阅读天数"] = book_data.get("totalReadDay", 0)
-                book_data["评分"] = book_data.get("newRating", "")
-                rd = book_data.get("newRatingDetail") or {}
-                mrk = rd.get("myRating", "")
-                book_data["我的评分"] = RATING_MAP.get(mrk, "") if mrk else ""
-                if book_data["阅读状态"] == "已读" and not book_data["我的评分"]:
-                    book_data["我的评分"] = "未评分"
-
-                book_data["时间"] = (
-                    book_data.get("finishedDate")
-                    or book_data.get("lastReadingDate")
-                    or book_data.get("readingBookDate")
+                ms = book_data.get("markedStatus", 1)
+                book_data["阅读进度"] = (
+                    100 if ms == 4 else float(book_data.get("readingProgress", 0) or 0) / 100
                 )
-                book_data["开始阅读时间"] = book_data.get("beginReadingDate")
-                book_data["最后阅读时间"] = book_data.get("lastReadingDate")
+            except (ValueError, TypeError):
+                book_data["阅读进度"] = 0
 
-                cover = (book_data.get("cover", "") or "").replace("/s_", "/t7_")
-                if not cover or not cover.strip() or not cover.startswith("http"):
-                    cover = BOOK_ICON_URL
+            if ms == 4:
+                book_data["阅读状态"] = "已读"
+            elif book_data.get("readingTime", 0) >= 60:
+                book_data["阅读状态"] = "在读"
+            else:
+                book_data["阅读状态"] = "想读"
 
-                author_name = book_data.get("author", "")
-                if author_name:
-                    book_data["作者"] = [
-                        aid for aid in [notion_helper.get_author_relation_id(x) for x in author_name.split(" ")]
-                        if aid
-                    ]
-                else:
-                    book_data["作者"] = []
+            book_data["阅读时长"] = book_data.get("readingTime", 0)
+            book_data["阅读天数"] = book_data.get("totalReadDay", 0)
+            book_data["评分"] = book_data.get("newRating", "")
+            rd = book_data.get("newRatingDetail") or {}
+            mrk = rd.get("myRating", "")
+            book_data["我的评分"] = RATING_MAP.get(mrk, "") if mrk else ""
+            if book_data["阅读状态"] == "已读" and not book_data["我的评分"]:
+                book_data["我的评分"] = "未评分"
 
-                categories = book_data.get("categories", [])
-                if categories:
-                    book_data["分类"] = [
-                        cid for cid in [notion_helper.get_category_relation_id(c.get("title", "")) for c in categories]
-                        if cid
-                    ]
-                else:
-                    book_data["分类"] = []
+            book_data["时间"] = (
+                book_data.get("finishedDate")
+                or book_data.get("lastReadingDate")
+                or book_data.get("readingBookDate")
+            )
+            book_data["开始阅读时间"] = book_data.get("beginReadingDate")
+            book_data["最后阅读时间"] = book_data.get("lastReadingDate")
 
-                book_data["Sort"] = sort
+            cover = (book_data.get("cover", "") or "").replace("/s_", "/t7_")
+            if not cover or not cover.strip() or not cover.startswith("http"):
+                cover = BOOK_ICON_URL
 
-                insert_book_to_notion(book_data, cover, page_id=page_id)
+            author_name = book_data.get("author", "")
+            if author_name:
+                book_data["作者"] = [
+                    aid for aid in [notion_helper.get_author_relation_id(x) for x in author_name.split(" ")]
+                    if aid
+                ]
+            else:
+                book_data["作者"] = []
 
-                print(f"  Done syncing: {title}")
-            except notion_errors.APIResponseError as e:
-                err_msg = str(e)
-                if "archived ancestor" in err_msg.lower() or "can'" in err_msg or "Can'" in err_msg:
-                    print(f"  ⚠️  《{title}》页面已被归档，跳过（请在Notion中恢复或删除该页面）")
-                else:
-                    print(f"  ❌ 《{title}》同步失败: {err_msg}")
-                continue
-            except Exception as e:
-                print(f"  ❌ 《{title}》同步异常: {e}")
-                continue
+            categories = book_data.get("categories", [])
+            if categories:
+                book_data["分类"] = [
+                    cid for cid in [notion_helper.get_category_relation_id(c.get("title", "")) for c in categories]
+                    if cid
+                ]
+            else:
+                book_data["分类"] = []
+
+            book_data["Sort"] = sort
+
+            insert_book_to_notion(book_data, cover, page_id, bookId, title, sort)
+
+            print(f"  Done syncing: {title}")
+        except notion_errors.APIResponseError as e:
+            err_msg = str(e)
+            if "archived ancestor" in err_msg.lower() or "can'" in err_msg or "Can'" in err_msg:
+                print(f"  [WARN] Page archived, skipping: {title}")
+            else:
+                print(f"  [ERROR] Sync failed for {title}: {err_msg}")
+            continue
+        except Exception as e:
+            print(f"  [ERROR] Unexpected error for {title}: {e}")
+            continue
 
 if __name__ == "__main__":
     main()
