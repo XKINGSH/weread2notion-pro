@@ -573,12 +573,15 @@ def main():
             note_data = book.get("book", {})
             if not isinstance(note_data, dict):
                 note_data = {}
+            print(f"  [NOTE_DATA keys] {list(note_data.keys())}")
             book_info = weread_api.get_bookinfo(bookId) if hasattr(weread_api, "get_bookinfo") else {}
             if not isinstance(book_info, dict):
                 book_info = {}
+            print(f"  [BOOK_INFO keys] {list(book_info.keys()) if isinstance(book_info, dict) else type(book_info)}")
             read_info = weread_api.get_read_info(bookId) if hasattr(weread_api, "get_read_info") else {}
             if not isinstance(read_info, dict):
                 read_info = {}
+            print(f"  [READ_INFO keys] {list(read_info.keys()) if isinstance(read_info, dict) else type(read_info)}")
 
             book_data = {}
             book_data.update(note_data)
