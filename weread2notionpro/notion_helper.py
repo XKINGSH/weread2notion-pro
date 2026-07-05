@@ -344,6 +344,26 @@ class NotionHelper:
         self._NotionHelper__cache[key] = page_id
         return page_id
 
+
+    def get_category_relation_id(self, name):
+        """查找或创建分类，返回分类页面ID"""
+        if not name or not self.category_database_id:
+            return None
+        key = f"category_{self.category_database_id}_{name}"
+        if key in self._NotionHelper__cache:
+            return self._NotionHelper__cache.get(key)
+        filter = {"property": "标题", "title": {"equals": name}}
+        response = self.query(database_id=self.category_database_id, filter=filter)
+        if len(response.get("results")) == 0:
+            parent = {"database_id": self.category_database_id, "type": "database_id"}
+            properties = {"标题": get_title(name)}
+            page_id = self.client.pages.create(
+                parent=parent, properties=properties, icon=get_icon(TAG_ICON_URL)
+            ).get("id")
+        else:
+            page_id = response.get("results")[0].get("id")
+        self._NotionHelper__cache[key] = page_id
+        return page_id
     def insert_bookmark(self, id, bookmark):
         icon = get_icon(BOOKMARK_ICON_URL)
         properties = {
@@ -431,28 +451,45 @@ class NotionHelper:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def query(self, **kwargs):
-        """查询数据库页面（兼容 notion-client 3.x）"""
+        """查询数据库页面（兼容 notion-client 3.x，支持分页）"""
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         if not kwargs:
             return {"results": [], "has_more": False}
         if "database_id" in kwargs:
             db_id = kwargs.pop("database_id")
             filter_cond = kwargs.pop("filter", None)
+            page_size = kwargs.pop("page_size", 100)
             all_results = []
-            resp = self.client.search(**kwargs)
-            for r in resp.get("results", []):
-                parent = r.get("parent", {})
-                if parent.get("database_id") != db_id:
-                    continue
-                if filter_cond:
-                    if not self._matches_filter(r, filter_cond):
+            start_cursor = kwargs.pop("start_cursor", None)
+            while True:
+                search_kwargs = dict(kwargs)
+                search_kwargs["page_size"] = min(page_size, 100)
+                if start_cursor:
+                    search_kwargs["start_cursor"] = start_cursor
+                resp = self.client.search(**search_kwargs)
+                # Filter by database_id
+                filtered = []
+                for r in resp.get("results", []):
+                    parent = r.get("parent", {})
+                    if parent.get("database_id") != db_id:
                         continue
-                all_results.append(r)
+                    if filter_cond:
+                        if not self._matches_filter(r, filter_cond):
+                            continue
+                    filtered.append(r)
+                all_results.extend(filtered)
+                start_cursor = resp.get("next_cursor")
+                if not resp.get("has_more") or not start_cursor:
+                    break
+                # Safety: prevent infinite loop
+                if len(all_results) > 10000:
+                    break
             return {"results": all_results, "has_more": False}
         return self.client.search(**kwargs) if kwargs else self.client.search()
 
+
     def _matches_filter(self, page, filter_cond):
-        """简易 filter 匹配"""
+        """完整 filter 匹配，支持 title/rich_text/number/relation/date/checkbox/select"""
         if not isinstance(filter_cond, dict):
             return True
         if "and" in filter_cond:
@@ -466,25 +503,75 @@ class NotionHelper:
         prop_val = props.get(prop_name)
         if not prop_val:
             return False
+        prop_type = prop_val.get("type", "")
+
+        # title filter
         if "title" in filter_cond:
-            if prop_val.get("type") != "title":
+            if prop_type != "title":
                 return False
             titles = prop_val.get("title", [])
             if not titles:
                 return False
             return titles[0].get("plain_text", "") == filter_cond["title"].get("equals", "")
+
+        # rich_text filter
         if "rich_text" in filter_cond:
-            if prop_val.get("type") != "rich_text":
+            if prop_type != "rich_text":
                 return False
+            if filter_cond["rich_text"].get("is_not_empty"):
+                return len(prop_val.get("rich_text", [])) > 0
             texts = prop_val.get("rich_text", [])
             if not texts:
                 return False
             return texts[0].get("plain_text", "") == filter_cond["rich_text"].get("equals", "")
+
+        # number filter
         if "number" in filter_cond:
-            if prop_val.get("type") != "number":
+            if prop_type != "number":
                 return False
+            if filter_cond["number"].get("is_not_empty"):
+                return prop_val.get("number") is not None
             return prop_val.get("number") == filter_cond["number"].get("equals")
+
+        # relation filter (contains)
+        if "relation" in filter_cond:
+            if prop_type != "relation":
+                return False
+            rel_ids = [r.get("id") for r in prop_val.get("relation", []) if r]
+            if filter_cond["relation"].get("contains"):
+                return filter_cond["relation"]["contains"] in rel_ids
+            return bool(rel_ids)
+
+        # date filter
+        if "date" in filter_cond:
+            if prop_type != "date":
+                return False
+            d = prop_val.get("date")
+            if filter_cond["date"].get("is_not_empty"):
+                return d is not None
+            if d and filter_cond["date"].get("equals"):
+                return d.get("start") == filter_cond["date"]["equals"]["start"]
+            return True
+
+        # checkbox filter
+        if "checkbox" in filter_cond:
+            if prop_type != "checkbox":
+                return False
+            return prop_val.get("checkbox") == filter_cond["checkbox"].get("equals", False)
+
+        # select filter
+        if "select" in filter_cond:
+            if prop_type != "select":
+                return False
+            sel = prop_val.get("select", {})
+            if filter_cond["select"].get("equals"):
+                return sel.get("name") == filter_cond["select"]["equals"]
+            if filter_cond["select"].get("is_not_empty"):
+                return bool(sel)
+            return True
+
         return True
+
 
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)

@@ -152,6 +152,60 @@ class WeReadApi:
         return self._post("/book/getprogress", bookId=book_id)
 
 
+    # ========== 兼容原版 weread_api.py 的方法名 ==========
+    
+    def get_bookinfo(self, bookId):
+        """获取书的详情（兼容原版方法名）"""
+        return self.get_book_info(bookId)
+    
+    def get_read_info(self, bookId):
+        """获取阅读详情（兼容原版方法名）
+        通过 /user/notebooks 的单本书数据模拟返回
+        """
+        data = self._post("/book/getprogress", bookId=bookId)
+        # 返回兼容原版 get_read_info 的格式
+        return {
+            "readingTime": data.get("readingTime", 0),
+            "totalReadDay": data.get("totalReadDay", 0),
+            "readingProgress": data.get("readingProgress", 0),
+            "markedStatus": data.get("markedStatus", 1),
+            "beginReadingDate": data.get("beginReadingDate", ""),
+            "lastReadingDate": data.get("lastReadingDate", ""),
+            "finishedDate": data.get("finishedDate", ""),
+            "readDetail": data.get("readDetail", {}),
+            "bookInfo": data.get("bookInfo", {}),
+        }
+    
+    def get_url(self, book_id):
+        """生成微信读书阅读链接"""
+        return f"https://weread.qq.com/web/reader/{book_id}"
+    
+    def get_bookshelf(self):
+        """获取书架（兼容原版 book.py 调用）
+        返回 {bookProgress: [...], archive: [...]} 格式
+        """
+        notebooks = self.get_notebooklist()
+        book_progress = []
+        archive = []
+        for nb in notebooks:
+            bd = nb.get("book", {})
+            entry = {
+                "bookId": nb.get("bookId"),
+                "readingTime": bd.get("readingTime", 0),
+                "totalReadDay": bd.get("totalReadDay", 0),
+                "readingProgress": bd.get("readingProgress", 0),
+                "markedStatus": bd.get("markedStatus", 1),
+                "beginReadingDate": bd.get("beginReadingDate", ""),
+                "lastReadingDate": bd.get("lastReadingDate", ""),
+                "finishedDate": bd.get("finishedDate", ""),
+                "title": bd.get("title", ""),
+                "author": bd.get("author", ""),
+                "cover": bd.get("cover", ""),
+                "sort": nb.get("sort", 0),
+            }
+            book_progress.append(entry)
+        return {"bookProgress": book_progress, "archive": archive}
+
 if __name__ == "__main__":
     api = WeReadApi()
     print("测试 get_notebooklist...")

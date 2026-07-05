@@ -239,34 +239,146 @@ weread_api = WeReadApi()
 notion_helper = NotionHelper()
 
 def ensure_book_in_notion(book):
-    """如果书不在 Notion 书架中，自动创建（含完整书籍信息）"""
+    """如果书不在 Notion 书架中，自动创建（含完整书籍信息，对齐原版 book.py 效果）"""
     bookId = book.get("bookId")
     existing = check(bookId)
     if existing:
         return existing
     
+    # 获取完整书籍信息
     book_info = weread_api.get_book_info(bookId)
     book_data = book_info if book_info else book.get("book", {})
+    note_data = book.get("book", {})
     
-    title = book_data.get("title", "")
-    author_name = book_data.get("author", "")
-    cover = book_data.get("cover", "")
+    title = book_data.get("title", note_data.get("title", ""))
+    author_name = book_data.get("author", note_data.get("author", ""))
+    cover = book_data.get("cover", note_data.get("cover", ""))
+    intro = book_data.get("intro", "")
+    isbn = book_data.get("isbn", "")
+    categories = book_data.get("categories", [])
+    begin_date = book_data.get("beginReadingDate", "")
+    last_date = book_data.get("lastReadingDate", "")
+    finished_date = book_data.get("finishedDate", "")
+    reading_time = book_data.get("readingTime", 0)
+    total_read_day = book_data.get("totalReadDay", 0)
+    new_rating = book_data.get("newRating", "")
+    rating_detail = book_data.get("newRatingDetail", {})
+    marked_status = book_data.get("markedStatus", 1)
+    reading_progress = book_data.get("readingProgress", 0)
+    
+    # 计算阅读状态
+    status = "想读"
+    if marked_status == 4:
+        status = "已读"
+    elif reading_time >= 60:
+        status = "在读"
+    
+    # 计算阅读进度
+    try:
+        read_progress = 100 if marked_status == 4 else float(reading_progress or 0) / 100
+    except (ValueError, TypeError):
+        read_progress = 0
+    
+    # 评分映射
+    rating_map = {"poor": "⭐️", "fair": "⭐️⭐️⭐️", "good": "⭐️⭐️⭐️⭐️⭐️"}
+    my_rating = ""
+    if rating_detail and rating_detail.get("myRating"):
+        my_rating = rating_map.get(rating_detail.get("myRating"), "")
+    elif status == "已读":
+        my_rating = "未评分"
+    
+    # 时间
+    time_str = finished_date or last_date or begin_date
     
     properties = {
         "书名": {"title": [{"text": {"content": title}}]},
         "BookId": {"rich_text": [{"text": {"content": bookId}}]},
         "Sort": {"number": book.get("sort", 0)},
+        "阅读状态": {"select": {"name": status}},
+        "阅读时长": {"number": reading_time},
+        "阅读天数": {"number": total_read_day},
+        "阅读进度": {"number": read_progress},
     }
     
-    # 封面
+    # 封面（替换 /s_ 为 /t7_）
     if cover:
-        properties["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
+        cover = cover.replace("/s_", "/t7_")
+        if cover and cover.strip() and cover.startswith("http"):
+            properties["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
     
-    # 作者（尝试查找或创建）
+    # 作者（关联作者库）
     if author_name:
-        author_id = notion_helper.get_author_relation_id(author_name)
-        if author_id:
-            properties["作者"] = {"relation": [{"id": author_id}]}
+        author_ids = []
+        for name in author_name.split(" "):
+            aid = notion_helper.get_author_relation_id(name)
+            if aid:
+                author_ids.append(aid)
+        if author_ids:
+            properties["作者"] = {"relation": [{"id": aid} for aid in author_ids]}
+    
+    # 分类（关联分类库）
+    if categories:
+        cat_ids = []
+        for cat in categories:
+            cid = notion_helper.get_category_relation_id(cat.get("title", ""))
+            if cid:
+                cat_ids.append(cid)
+        if cat_ids:
+            properties["分类"] = {"relation": [{"id": cid} for cid in cat_ids]}
+    
+    # 豆瓣链接
+    douban_url = book_data.get("douban_url", "")
+    if douban_url:
+        properties["豆瓣链接"] = {"url": douban_url}
+    
+    # 我的评分
+    if my_rating:
+        properties["我的评分"] = {"select": {"name": my_rating}}
+    
+    # 简介
+    if intro:
+        properties["简介"] = {"rich_text": [{"text": {"content": intro}}]}
+    
+    # ISBN
+    if isbn:
+        properties["ISBN"] = {"rich_text": [{"text": {"content": isbn}}]}
+    
+    # 链接
+    weread_url = book_data.get("url", "") or ("https://weread.qq.com/web/book/" + bookId)
+    properties["链接"] = {"url": weread_url}
+    
+    # 开始/最后/完成阅读时间
+    if begin_date:
+        try:
+            from datetime import datetime
+            bd = datetime.fromtimestamp(int(begin_date)).strftime("%Y-%m-%d")
+            properties["开始阅读时间"] = {"date": {"start": bd}}
+        except (ValueError, TypeError):
+            pass
+    if last_date:
+        try:
+            from datetime import datetime
+            ld = datetime.fromtimestamp(int(last_date)).strftime("%Y-%m-%d")
+            properties["最后阅读时间"] = {"date": {"start": ld}}
+        except (ValueError, TypeError):
+            pass
+    if finished_date:
+        try:
+            from datetime import datetime, timezone, timedelta
+            fd = datetime.fromtimestamp(int(finished_date), tz=timezone(timedelta(hours=8)))
+            properties["时间"] = {"date": {"start": fd.strftime("%Y-%m-%d")}}
+            # 年/月/周/日关系
+            notion_helper.get_date_relation(properties, fd)
+        except (ValueError, TypeError):
+            pass
+    elif time_str:
+        try:
+            from datetime import datetime, timezone, timedelta
+            td = datetime.fromtimestamp(int(time_str), tz=timezone(timedelta(hours=8)))
+            properties["时间"] = {"date": {"start": td.strftime("%Y-%m-%d")}}
+            notion_helper.get_date_relation(properties, td)
+        except (ValueError, TypeError):
+            pass
     
     response = notion_helper.client.pages.create(
         parent={"database_id": notion_helper.book_database_id},
@@ -305,22 +417,50 @@ def main():
                 chapter_content = sort_notes(page_id, chapter, bookmark_list)
                 append_blocks(page_id, chapter_content)
                 
-                # 更新书籍信息
-                book_data = book.get("book", {})
-                author_name = book_data.get("author", "")
-                cover = book_data.get("cover", "")
+                # 更新书籍信息（对齐原版 book.py 的 insert_book_to_notion）
+                note_data = book.get("book", {})
+                author_name = note_data.get("author", "")
+                cover = note_data.get("cover", "")
+                reading_time = note_data.get("readingTime", 0)
+                total_read_day = note_data.get("totalReadDay", 0)
+                marked_status = note_data.get("markedStatus", 1)
+                reading_progress = note_data.get("readingProgress", 0)
                 
-                update_props = {"Sort": get_number(sort)}
+                # 计算阅读状态
+                status = "想读"
+                if marked_status == 4:
+                    status = "已读"
+                elif reading_time >= 60:
+                    status = "在读"
                 
+                try:
+                    read_progress = 100 if marked_status == 4 else float(reading_progress or 0) / 100
+                except (ValueError, TypeError):
+                    read_progress = 0
+                
+                update_props = {
+                    "Sort": get_number(sort),
+                    "阅读状态": {"select": {"name": status}},
+                    "阅读时长": {"number": reading_time},
+                    "阅读天数": {"number": total_read_day},
+                    "阅读进度": {"number": read_progress},
+                }
+                
+                # 封面
                 if cover:
-                    update_props["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
+                    cover = cover.replace("/s_", "/t7_")
+                    if cover and cover.strip() and cover.startswith("http"):
+                        update_props["封面"] = {"files": [{"name": "Cover", "type": "external", "external": {"url": cover}}]}
                 
+                # 作者
                 if author_name:
-                    author_id = notion_helper.get_author_relation_id(author_name)
-                    if author_id:
-                        update_props["作者"] = {"relation": [{"id": author_id}]}
-                
-                update_props["阅读状态"] = {"select": {"name": "在读"}}
+                    author_ids = []
+                    for aname in author_name.split(" "):
+                        aid = notion_helper.get_author_relation_id(aname)
+                        if aid:
+                            author_ids.append(aid)
+                    if author_ids:
+                        update_props["作者"] = {"relation": [{"id": aid} for aid in author_ids]}
                 
                 notion_helper.update_book_page(page_id=page_id, properties=update_props)
                 print(f"  ✅ 《{title}》同步完成")
