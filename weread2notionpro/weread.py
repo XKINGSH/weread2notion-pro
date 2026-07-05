@@ -342,7 +342,6 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     
     # 时间（完成/最后阅读时间）- 用于年/月/周/日关系
     time_str = book_data.get("时间", "")
-    print(f"  [DEBUG] time_str={repr(time_str)}, finishedDate={repr(book_data.get('finishedDate'))}, lastReadingDate={repr(book_data.get('lastReadingDate'))}")
     if time_str:
         try:
             ts = int(time_str)
@@ -355,7 +354,6 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     
     # 开始阅读时间
     begin_date = book_data.get("开始阅读时间", "")
-    print(f"  [DEBUG] begin_date={repr(begin_date)}, beginReadingDate={repr(book_data.get('beginReadingDate'))}")
     if begin_date:
         try:
             ts = int(begin_date)
@@ -584,11 +582,27 @@ def main():
 
             book_data = {}
             book_data.update(note_data)
-            if book_info:
-                book_data.update(book_info)
-            if read_info:
-                book_data.update(read_info.get("readDetail", {}))
-                book_data.update(read_info.get("bookInfo", {}))
+            if book_info and isinstance(book_info, dict):
+                # Only update with non-empty values from book_info
+                for k, v in book_info.items():
+                    if v and not isinstance(v, (list, dict)) or isinstance(v, (list, dict)):
+                        book_data[k] = v
+            if read_info and isinstance(read_info, dict):
+                # Only update with non-empty values (don't let empty strings overwrite valid dates)
+                for k, v in read_info.items():
+                    if v is not None and v != "" and v != {}:
+                        book_data[k] = v
+                # Also merge readDetail and bookInfo selectively
+                rd = read_info.get("readDetail", {})
+                bi = read_info.get("bookInfo", {})
+                if rd and isinstance(rd, dict) and rd:
+                    for k, v in rd.items():
+                        if v is not None and v != "":
+                            book_data[k] = v
+                if bi and isinstance(bi, dict) and bi:
+                    for k, v in bi.items():
+                        if v is not None and v != "":
+                            book_data[k] = v
 
             try:
                 ms = book_data.get("markedStatus", 1)
