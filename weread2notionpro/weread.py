@@ -462,8 +462,21 @@ def main():
                     if author_ids:
                         update_props["作者"] = {"relation": [{"id": aid} for aid in author_ids]}
                 
+                # Write year/month/week/day relations if we have time info
+                note_data_full = book.get("book", {})
+                finished_date = note_data_full.get("finishedDate")
+                last_date = note_data_full.get("lastReadingDate")
+                time_str = finished_date or last_date
+                if time_str:
+                    try:
+                        from datetime import datetime, timezone, timedelta
+                        td = datetime.fromtimestamp(int(time_str), tz=timezone(timedelta(hours=8)))
+                        notion_helper.get_date_relation(update_props, td)
+                    except (ValueError, TypeError):
+                        pass
+                
                 notion_helper.update_book_page(page_id=page_id, properties=update_props)
-                print(f"  ✅ 《{title}》同步完成")
+                print(f"  Done syncing: {title}")
             except notion_errors.APIResponseError as e:
                 err_msg = str(e)
                 if "archived ancestor" in err_msg.lower() or "can'" in err_msg or "Can'" in err_msg:
