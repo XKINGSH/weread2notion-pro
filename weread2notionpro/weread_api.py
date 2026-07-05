@@ -160,11 +160,11 @@ class WeReadApi:
     
     def get_read_info(self, bookId):
         """获取阅读详情（兼容原版方法名）
-        通过 /user/notebooks 的单本书数据模拟返回
+        通过 /book/getprogress 获取进度数据
+        同时尝试从 /user/notebooks 获取日期信息
         """
         data = self._post("/book/getprogress", bookId=bookId)
-        # 返回兼容原版 get_read_info 的格式
-        return {
+        result = {
             "readingTime": data.get("readingTime", 0),
             "totalReadDay": data.get("totalReadDay", 0),
             "readingProgress": data.get("readingProgress", 0),
@@ -175,6 +175,32 @@ class WeReadApi:
             "readDetail": data.get("readDetail", {}),
             "bookInfo": data.get("bookInfo", {}),
         }
+        # 如果日期字段为空，尝试从 /user/notebooks 获取
+        if not result["beginReadingDate"] or not result["lastReadingDate"]:
+            notebooks = self.get_notebooklist()
+            for nb in notebooks:
+                if nb.get("bookId") == bookId:
+                    book_obj = nb.get("book", {})
+                    if not result["beginReadingDate"] and book_obj.get("beginReadingDate"):
+                        result["beginReadingDate"] = book_obj["beginReadingDate"]
+                    if not result["lastReadingDate"] and book_obj.get("lastReadingDate"):
+                        result["lastReadingDate"] = book_obj["lastReadingDate"]
+                    if not result["finishedDate"] and book_obj.get("finishedDate"):
+                        result["finishedDate"] = book_obj["finishedDate"]
+                    break
+        # 如果还是没有，尝试从 /shelf/sync 获取
+        if not result["beginReadingDate"] or not result["lastReadingDate"]:
+            shelf = self.get_shelf()
+            for bp in shelf.get("bookProgress", []):
+                if bp.get("bookId") == bookId:
+                    if not result["beginReadingDate"] and bp.get("beginReadingDate"):
+                        result["beginReadingDate"] = bp["beginReadingDate"]
+                    if not result["lastReadingDate"] and bp.get("lastReadingDate"):
+                        result["lastReadingDate"] = bp["lastReadingDate"]
+                    if not result["finishedDate"] and bp.get("finishedDate"):
+                        result["finishedDate"] = bp["finishedDate"]
+                    break
+        return result
     
     def get_url(self, book_id):
         """生成微信读书阅读链接"""
