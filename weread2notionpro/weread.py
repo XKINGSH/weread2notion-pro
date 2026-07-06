@@ -347,10 +347,14 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             ts = int(time_str)
             from datetime import datetime, timezone, timedelta
             dt = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
-            properties["时间"] = {"date": {"start": dt.strftime("%Y-%m-%d")}}
-            notion_helper.get_date_relation(properties, dt)
-        except (ValueError, TypeError, OSError):
-            pass
+            # Only set date if it's a reasonable year (1970-2100)
+            if 1970 <= dt.year <= 2100:
+                properties["时间"] = {"date": {"start": dt.strftime("%Y-%m-%d")}}
+                notion_helper.get_date_relation(properties, dt)
+            else:
+                print(f"  [WARN] Sort timestamp {ts} yields year {dt.year}, skipping date relation")
+        except (ValueError, TypeError, OSError) as e:
+            print(f"  [WARN] Could not parse time_str={repr(time_str)}: {e}")
     
     # 开始阅读时间
     begin_date = book_data.get("开始阅读时间", "")
@@ -359,7 +363,8 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             ts = int(begin_date)
             from datetime import datetime, timezone, timedelta
             bd = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
-            properties["开始阅读时间"] = {"date": {"start": bd.strftime("%Y-%m-%d")}}
+            if 1970 <= bd.year <= 2100:
+                properties["开始阅读时间"] = {"date": {"start": bd.strftime("%Y-%m-%d")}}
         except (ValueError, TypeError, OSError):
             pass
     
@@ -370,15 +375,32 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             ts = int(last_date)
             from datetime import datetime, timezone, timedelta
             ld = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8)))
-            properties["最后阅读时间"] = {"date": {"start": ld.strftime("%Y-%m-%d")}}
+            if 1970 <= ld.year <= 2100:
+                properties["最后阅读时间"] = {"date": {"start": ld.strftime("%Y-%m-%d")}}
         except (ValueError, TypeError, OSError):
             pass
     
     print(f"  Properties to update: {list(properties.keys())}")
     
-    # 更新页面
-    icon = {"type": "external", "external": {"url": cover}} if cover else None
-    result = notion_helper.update_page(page_id=page_id, properties=properties, cover=icon)
+    # 更新页面 properties
+    result = notion_helper.update_page(page_id=page_id, properties=properties)
+    
+    # 更新封面（Notion API: pages.update doesn't support cover, need pages.patch）
+    if cover and isinstance(cover, str) and cover.startswith("http"):
+        try:
+            cover_icon = {"type": "external", "external": {"url": cover}}
+            notion_helper.client.pages.patch(page_id=page_id, cover=cover_icon)
+        except Exception as e:
+            print(f"  [WARN] Failed to update cover: {e}")
+    
+    # 更新图标（使用封面URL作为页面图标）
+    if cover and isinstance(cover, str) and cover.startswith("http"):
+        try:
+            icon_external = {"type": "external", "external": {"url": cover}}
+            notion_helper.client.pages.patch(page_id=page_id, icon=icon_external)
+        except Exception as e:
+            print(f"  [WARN] Failed to update icon: {e}")
+    
     return result
 
 
@@ -650,8 +672,11 @@ def main():
             # Fallback: if dates are empty, use sort timestamp as last reading date
             if not book_data.get("时间") and sort:
                 try:
-                    book_data["时间"] = sort
-                    book_data["最后阅读时间"] = sort
+                    ts = int(sort)
+                    # Validate: sort should be a reasonable timestamp (after year 2000)
+                    if 946684800 <= ts <= 4102444800:
+                        book_data["时间"] = ts
+                        book_data["最后阅读时间"] = ts
                 except (ValueError, TypeError):
                     pass
 
