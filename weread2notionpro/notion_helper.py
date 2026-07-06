@@ -612,6 +612,9 @@ class NotionHelper:
         for result in results:
             book_prop = result.get("properties", {}).get("BookId")
             bookId = get_property_value(book_prop) if book_prop else None
+            # Skip entries with empty bookId to prevent duplicate creation
+            if not bookId:
+                continue
             books_dict[bookId] = {
                 "pageId": result.get("id"),
                 "readingTime": get_property_value(

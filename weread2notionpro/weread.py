@@ -324,17 +324,17 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
             pass
     
     # 简介
-    intro = book_data.get("简介", "")
+    intro = book_data.get("简介") or book_data.get("intro") or ""
     if intro and isinstance(intro, str) and intro.strip():
         properties["简介"] = {"rich_text": [{"text": {"content": intro.strip()}}]}
     
     # ISBN
-    isbn = book_data.get("ISBN", "")
+    isbn = book_data.get("ISBN") or book_data.get("isbn") or ""
     if isbn and isinstance(isbn, str) and isbn.strip():
         properties["ISBN"] = {"rich_text": [{"text": {"content": isbn.strip()}}]}
     
     # 链接
-    weread_url = book_data.get("链接", "") or ""
+    weread_url = book_data.get("链接") or book_data.get("url") or ""
     if not weread_url and bookId:
         weread_url = "https://weread.qq.com/web/reader/" + str(bookId)
     if weread_url and isinstance(weread_url, str):
@@ -531,6 +531,11 @@ def ensure_book_in_notion(book):
     )
     page_id = response.get("id")
     print(f"  自动创建书籍页面: {title} (ID: {page_id})")
+    # Verify we can find it by bookId filter
+    verify = check(bookId)
+    if verify:
+        page_id = verify
+        print(f"  Verified page ID via bookId lookup: {page_id}")
     return page_id
 
 
@@ -551,6 +556,13 @@ def main():
             page_id = ensure_book_in_notion(book)
             if not page_id:
                 print(f"  创建失败，跳过")
+                continue
+            # Re-query to avoid duplicates from stale cache
+            existing = check(bookId)
+            if existing:
+                notion_books[bookId] = {"pageId": existing}
+            else:
+                print(f"  创建后仍无法通过 bookId 查找，跳过")
                 continue
         else:
             page_id = notion_books.get(bookId).get("pageId")
@@ -667,6 +679,16 @@ def main():
 
             book_data["Sort"] = sort
 
+            # Map API field names to Notion property names
+            # intro -> 简介, isbn -> ISBN, url -> 链接
+            if book_data.get("intro"):
+                book_data["简介"] = book_data["intro"]
+            if book_data.get("isbn"):
+                book_data["ISBN"] = book_data["isbn"]
+            if book_data.get("url"):
+                book_data["链接"] = book_data["url"]
+            # categories -> 分类 (already handled above as relation IDs)
+            
             insert_book_to_notion(book_data, cover, page_id, bookId, title, sort)
 
             print(f"  Done syncing: {title}")
