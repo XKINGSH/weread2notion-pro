@@ -553,11 +553,6 @@ def ensure_book_in_notion(book):
     )
     page_id = response.get("id")
     print(f"  自动创建书籍页面: {title} (ID: {page_id})")
-    # Verify we can find it by bookId filter
-    verify = check(bookId)
-    if verify:
-        page_id = verify
-        print(f"  Verified page ID via bookId lookup: {page_id}")
     return page_id
 
 
@@ -579,13 +574,10 @@ def main():
             if not page_id:
                 print(f"  创建失败，跳过")
                 continue
-            # Re-query to avoid duplicates from stale cache
-            existing = check(bookId)
-            if existing:
-                notion_books[bookId] = {"pageId": existing}
-            else:
-                print(f"  创建后仍无法通过 bookId 查找，跳过")
-                continue
+            # Trust the page_id returned from ensure_book_in_notion
+            # and add to cache to avoid re-creation
+            notion_books[bookId] = {"pageId": page_id}
+            print(f"  已缓存 pageId: {page_id}")
         else:
             page_id = notion_books.get(bookId).get("pageId")
             if not page_id:
