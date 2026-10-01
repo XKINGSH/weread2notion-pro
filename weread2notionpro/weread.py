@@ -1,5 +1,9 @@
+import os
+import sys
+import traceback
+
 from weread2notionpro.notion_helper import NotionHelper
-from weread2notionpro.weread_api import WeReadApi
+from weread2notionpro.weread_api import WeReadApi, WeReadApiError, WeReadAuthError
 from notion_client import errors as notion_errors
 
 from weread2notionpro.utils import (
@@ -238,8 +242,11 @@ def append_blocks_to_notion(id, blocks, after, contents):
     return l
 
 
+# dry-run 时完全不构造 Notion 客户端：既保证"只读不写"，也让预检不依赖 NOTION_* 凭据。
+DRY_RUN = ("--dry-run" in sys.argv) or (os.getenv("WEREAD_DRY_RUN") == "1")
+
 weread_api = WeReadApi()
-notion_helper = NotionHelper()
+notion_helper = None if DRY_RUN else NotionHelper()
 
 def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     """插入/更新书籍信息到Notion（对齐原版 book.py 的 insert_book_to_notion 效果）"""
@@ -382,26 +389,23 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     
     print(f"  Properties to update: {list(properties.keys())}")
     
-    # 更新页面 properties
-    result = notion_helper.update_page(page_id=page_id, properties=properties)
-    
-    # 更新封面（Notion API: pages.update doesn't support cover, need pages.patch）
-    if cover and isinstance(cover, str) and cover.startswith("http"):
-        try:
-            cover_icon = {"type": "external", "external": {"url": cover}}
-            notion_helper.client.pages.patch(page_id=page_id, cover=cover_icon)
-        except Exception as e:
-            print(f"  [WARN] Failed to update cover: {e}")
-    
-    # 更新图标（使用封面URL作为页面图标）
-    if cover and isinstance(cover, str) and cover.startswith("http"):
-        try:
-            icon_external = {"type": "external", "external": {"url": cover}}
-            notion_helper.client.pages.patch(page_id=page_id, icon=icon_external)
-        except Exception as e:
-            print(f"  [WARN] Failed to update icon: {e}")
-    
-    return result
+    # 更新页面属性，并把封面与图标合并到同一次请求里。
+    #
+    # 历史坑：这里曾写成 notion_helper.client.pages.patch(...)，但 notion-client 的
+    # PagesEndpoint 只有 create / retrieve / update，**根本没有 patch 方法**，于是每本书、
+    # 每一轮都抛 AttributeError: 'PagesEndpoint' object has no attribute 'patch'，
+    # 被 except 吞成一行 [WARN]，封面和图标从未真正写进 Notion。
+    # 2026-10-01 手动跑的那一轮仍然如此：8 本书 → 8 次 cover + 8 次 icon 报错，run 却是绿的。
+    # 正确做法：pages.update 本身就支持 cover / icon，一次请求即可。
+    cover_object = None
+    if isinstance(cover, str) and cover.startswith("http"):
+        cover_object = {"type": "external", "external": {"url": cover}}
+    return notion_helper.update_page(
+        page_id=page_id,
+        properties=properties,
+        cover=cover_object,
+        icon=cover_object,
+    )
 
 
 
@@ -556,13 +560,49 @@ def ensure_book_in_notion(book):
     return page_id
 
 
-def main():
+def _dry_run():
+    """只校验微信读书侧凭据与数据可达性，不读写 Notion。"""
+    print("[dry-run] 校验 WEREAD_API_KEY ...")
+    ok, message = weread_api.check_credentials()
+    print(f"[dry-run] {message}")
+    if not ok:
+        print(f"::error title=WEREAD_API_KEY 校验失败::{message}")
+        return 1
+    books = weread_api.get_notebooklist()
+    print(f"[dry-run] 有笔记的书共 {len(books)} 本")
+    for book in books[:20]:
+        title = book.get("book", {}).get("title") or book.get("title", "未知书籍")
+        print(f"[dry-run]   - {title}")
+    api_data = weread_api.get_api_data()
+    read_times = api_data.get("readTimes", {}) or {}
+    print(f"[dry-run] 阅读时长记录 {len(read_times)} 天")
+    print("[dry-run] 全部通过，未写入任何 Notion 数据")
+    return 0
+
+
+def main(dry_run=False):
+    """同步微信读书笔记到 Notion。
+
+    返回值就是进程退出码：0 = 全部成功；1 = 有书籍同步失败，需要人工介入。
+
+    重要：这里刻意不再"吞掉"失败。旧实现在循环里 except Exception 打印一行就 continue，
+    于是 2026-09-05 那次 run（33942853283）最后一本《深层认知》因网关断连失败，
+    日志只有一行 [ERROR]，run 依然显示 success —— 同步内容悄悄变少，直到 60 天后
+    workflow 被 GitHub 自动停用才被发现。
+    """
+    if dry_run or DRY_RUN:
+        return _dry_run()
+
     notion_books = notion_helper.get_all_book()
     books = weread_api.get_notebooklist()
     if books is None:
-        print("没有获取到书籍列表")
-        return
-    
+        print("::error title=书籍列表为空::微信读书没有返回任何书籍")
+        return 1
+
+    synced_count = 0
+    skipped_archived = []
+    failed_books = []
+
     for index, book in enumerate(books):
         bookId = book.get("bookId")
         title = book.get("book", {}).get("title") or book.get("title", "未知书籍")
@@ -590,6 +630,9 @@ def main():
             chapter = weread_api.get_chapter_info(bookId)
             bookmark_list = get_bookmark_list(page_id, bookId)
             reviews = get_review_list(page_id, bookId)
+            print(f"  拉取到 划线 {len(bookmark_list)} 条 / 想法点评 {len(reviews)} 条")
+            if len(bookmark_list) == 0 and len(reviews) == 0:
+                print("  [WARN] 本书既无划线也无想法；若微信读书里确实有笔记，请检查 WEREAD_API_KEY 的权限范围")
             bookmark_list.extend(reviews)
             chapter_content = sort_notes(page_id, chapter, bookmark_list)
             append_blocks(page_id, chapter_content)
@@ -709,18 +752,64 @@ def main():
             insert_book_to_notion(book_data, cover, page_id, bookId, title, sort)
 
             print(f"  Done syncing: {title}")
+            synced_count += 1
+        except WeReadAuthError as e:
+            # 鉴权失败和"某一本书"无关，不能跳过：立刻中止整轮，让 run 明确变红。
+            print(f"  [FATAL] 微信读书 API Key 失效，中止本轮同步（已处理 {synced_count} 本）")
+            print(f"::error title=WEREAD_API_KEY 失效::{e}")
+            raise
         except notion_errors.APIResponseError as e:
             err_msg = str(e)
             if "archived ancestor" in err_msg.lower() or "can'" in err_msg or "Can'" in err_msg:
                 print(f"  [WARN] Page archived, skipping: {title}")
+                skipped_archived.append(title)
             else:
                 print(f"  [ERROR] Sync failed for {title}: {err_msg}")
+                print(f"::error title=Notion 接口错误::{title}: {err_msg}")
+                failed_books.append((title, err_msg))
             continue
         except Exception as e:
-            import traceback
             print(f"  [ERROR] Unexpected error for {title}: {e}")
             traceback.print_exc()
+            print(f"::error title=同步失败::{title}: {e}")
+            failed_books.append((title, str(e)))
             continue
 
+    # —— 读书进度同步 ——
+    # 上面的循环只覆盖 /user/notebooks（"有笔记的书"）。"在读但还没划线"的书
+    # 阅读进度永远不动，这是需求里"读书进度要能同步"的实际缺口。
+    # 这里用书架全量再跑一遍，只更新已有书籍页的属性，不新建页面 → 幂等、可重复执行。
+    try:
+        from weread2notionpro.progress import sync_progress
+
+        progress_summary = sync_progress(api=weread_api, helper=notion_helper)
+        print(
+            f"  读书进度：更新 {progress_summary['updated']} 本 / "
+            f"无变化 {progress_summary['unchanged']} 本 / "
+            f"Notion 缺页 {progress_summary['missing']} 本 / "
+            f"失败 {len(progress_summary['failures'])} 本"
+        )
+        for progress_title, progress_err in progress_summary["failures"]:
+            print(f"::error title=读书进度同步失败::{progress_title}: {progress_err}")
+            failed_books.append((progress_title, "读书进度: %s" % progress_err))
+    except WeReadAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 进度是增量能力，不能让它把整轮同步带崩，但必须显性记录
+        print(f"::error title=读书进度同步异常::{type(exc).__name__}: {exc}")
+        failed_books.append(("-读书进度同步-", "%s: %s" % (type(exc).__name__, exc)))
+
+    print(
+        f"同步结束：成功 {synced_count} 本，归档跳过 {len(skipped_archived)} 本，"
+        f"失败 {len(failed_books)} 本（本轮共 {len(books)} 本）"
+    )
+    if failed_books:
+        # 有失败就把退出码置为 1 —— 这是"不再静默失败"的关键一步。
+        print("以下书籍本轮同步失败，请查看日志中的 ::error:: 提示：")
+        for failed_title, failed_err in failed_books:
+            print(f"  - {failed_title} | {failed_err}")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -31,3 +31,13 @@ jobs:
           pip install -r requirements.txt
       - name: Sync read time
         run: python -m weread2notionpro.read_time
+
+      - name: 失败时给出排查指引
+        if: failure()
+        run: |
+          {
+            echo "## ❌ 阅读时长同步失败"
+            echo ""
+            echo "如果是 \`阅读时长数据为空\`，通常是 WEREAD_API_KEY 失效或微信读书接口有变更："
+            echo "请到 https://weread.qq.com/r/weread-skills 重新扫码获取 Key 并更新 Secret \`WEREAD_API_KEY\`。"
+          } >> "$GITHUB_STEP_SUMMARY"

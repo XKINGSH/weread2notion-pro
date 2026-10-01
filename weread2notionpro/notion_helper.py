@@ -25,6 +25,16 @@ from weread2notionpro.utils  import (
     get_property_value,
 )
 
+def _secret_status(env_name):
+    """只报告凭据是否已配置，绝不返回凭据本身。
+
+    安全修复：旧代码把 NOTION_TOKEN / WEREAD_API_KEY 的**原文**写进
+    Notion「设置」数据库的 NotinToken / WeReadCookie 两列，等于把凭据复制了一份
+    到 Notion 里，任何能看这个页面的人都能读到。现在只写状态，不写值。
+    """
+    return "已配置（出于安全考虑不写入 Notion）" if os.getenv(env_name) else "未配置"
+
+
 TAG_ICON_URL = "https://www.notion.so/icons/tag_gray.svg"
 USER_ICON_URL = "https://www.notion.so/icons/user-circle-filled_gray.svg"
 TARGET_ICON_URL = "https://www.notion.so/icons/target_red.svg"
@@ -228,9 +238,10 @@ class NotionHelper:
         properties = {
             "标题": {"title": [{"type": "text", "text": {"content": "设置"}}]},
             "最后同步时间": {"date": {"start": pendulum.now("Asia/Shanghai").isoformat()}},
-            "NotinToken": {"rich_text": [{"type": "text", "text": {"content": os.getenv("NOTION_TOKEN")}}]},
+            # 安全修复：不再把凭据原文写进 Notion，只写"是否已配置"。
+            "NotinToken": {"rich_text": [{"type": "text", "text": {"content": _secret_status("NOTION_TOKEN")}}]},
             "NotinPage": {"rich_text": [{"type": "text", "text": {"content": os.getenv("NOTION_PAGE")}}]},
-            "WeReadCookie": {"rich_text": [{"type": "text", "text": {"content": os.getenv("WEREAD_API_KEY", "")}}]},
+            "WeReadCookie": {"rich_text": [{"type": "text", "text": {"content": _secret_status("WEREAD_API_KEY")}}]},
         }
         if existing_pages:
             remote_properties = existing_pages[0].get("properties")
@@ -249,6 +260,20 @@ class NotionHelper:
             )
   
         
+
+    _last_write_ts = 0.0
+
+    def _throttle(self):
+        """给 Notion 写入之间留出最小间隔，避免触发 3 req/s 的官方限流。
+
+        旧实现在书多、划线多的时候是"能多快就多快"地连打 API，
+        一旦被限流，重试 3 次 × 5 秒之后仍失败就把整本书丢掉。
+        """
+        interval = float(os.getenv("NOTION_MIN_INTERVAL", "0.35"))
+        wait = self._last_write_ts + interval - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        NotionHelper._last_write_ts = time.time()
 
     def update_heatmap(self, block_id, url):
         # 更新 image block 的链接
@@ -433,14 +458,24 @@ class NotionHelper:
         return self.client.pages.update(page_id=page_id, properties=properties)
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def update_page(self, page_id, properties, cover=None):
-        return self.client.pages.update(
-            page_id=page_id, properties=properties, cover=cover
-        )
+    def update_page(self, page_id, properties, cover=None, icon=None):
+        """更新页面属性，可选同时更新封面与图标。
+
+        notion-client 的 pages.update 本身就支持 cover / icon，
+        不需要（也没有）pages.patch。只传非 None 的字段，避免把 null 发上去。
+        """
+        self._throttle()
+        payload = {"page_id": page_id, "properties": properties}
+        if cover is not None:
+            payload["cover"] = cover
+        if icon is not None:
+            payload["icon"] = icon
+        return self.client.pages.update(**payload)
 
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def create_page(self, parent, properties, icon):
+        self._throttle()
         return self.client.pages.create(parent=parent, properties=properties, icon=icon)
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
@@ -459,8 +494,16 @@ class NotionHelper:
             db_id = kwargs.pop("database_id")
             filter_cond = kwargs.pop("filter", None)
             page_size = kwargs.pop("page_size", 100)
-            all_results = []
             start_cursor = kwargs.pop("start_cursor", None)
+            server_side = getattr(self.client.databases, "query", None)
+            if callable(server_side):
+                return self._query_server_side(
+                    server_side, db_id, filter_cond, page_size, start_cursor, kwargs
+                )
+            # —— 回退路径 ——
+            # 当前 notion-client 版本没有 databases.query 时，才退回下面这套
+            # "全库 search + 客户端过滤" 的老做法。
+            all_results = []
             while True:
                 search_kwargs = dict(kwargs)
                 search_kwargs["page_size"] = min(page_size, 100)
@@ -487,6 +530,28 @@ class NotionHelper:
             return {"results": all_results, "has_more": False}
         return self.client.search(**kwargs) if kwargs else self.client.search()
 
+
+    def _query_server_side(self, query_fn, db_id, filter_cond, page_size, start_cursor, extra):
+        """走服务端 databases.query：筛选与分页都在 Notion 侧完成。
+
+        旧实现（下面 _matches_filter 那条回退路径）用 client.search 拉全库再在本地筛，
+        有两个后果：一是 search 有索引延迟、且会漏掉刚建的页面，于是同一本书可能被
+        重复创建；二是把整库结果都拖回来，书一多就非常慢。
+        """
+        results = []
+        while True:
+            call_kwargs = dict(extra)
+            if filter_cond is not None:
+                call_kwargs["filter"] = filter_cond
+            call_kwargs["page_size"] = min(int(page_size or 100), 100)
+            if start_cursor:
+                call_kwargs["start_cursor"] = start_cursor
+            response = query_fn(database_id=db_id, **call_kwargs)
+            results.extend(response.get("results", []))
+            start_cursor = response.get("next_cursor")
+            if not response.get("has_more") or not start_cursor:
+                break
+        return {"results": results, "has_more": False}
 
     def _matches_filter(self, page, filter_cond):
         """完整 filter 匹配，支持 title/rich_text/number/relation/date/checkbox/select"""
@@ -576,11 +641,27 @@ class NotionHelper:
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_block_children(self, id):
-        response = self.client.blocks.children.list(id)
-        return response.get("results")
+        """列出页面的子块（带分页）。
+
+        旧实现只取第一页（最多 100 个块），一本书划线一多，
+        后面对不上的块就会走 append 而不是 update，造成重复插入。
+        """
+        results = []
+        cursor = None
+        while True:
+            call_kwargs = {"block_id": id, "page_size": 100}
+            if cursor:
+                call_kwargs["start_cursor"] = cursor
+            response = self.client.blocks.children.list(**call_kwargs)
+            results.extend(response.get("results", []))
+            cursor = response.get("next_cursor")
+            if not response.get("has_more") or not cursor:
+                break
+        return results
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def append_blocks(self, block_id, children):
+        self._throttle()
         return self.client.blocks.children.append(block_id=block_id, children=children)
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
@@ -633,6 +714,17 @@ class NotionHelper:
                 ),
                 "comment": get_property_value(result.get("properties", {}).get("豆瓣短评")),
                 "status": get_property_value(result.get("properties", {}).get("阅读状态")),
+                # 以下三个字段供 progress.py 做"只有变了才写"的去重比较，
+                # 顺带把属性读全，不额外产生 Notion 请求。
+                "阅读进度": get_property_value(
+                    result.get("properties", {}).get("阅读进度")
+                ),
+                "阅读天数": get_property_value(
+                    result.get("properties", {}).get("阅读天数")
+                ),
+                "最后阅读时间": get_property_value(
+                    result.get("properties", {}).get("最后阅读时间")
+                ),
             }
         return books_dict
 
