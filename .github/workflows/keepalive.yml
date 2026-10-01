@@ -1,0 +1,44 @@
+name: Repo Keepalive（防止定时 workflow 被 GitHub 自动停用）
+
+# 为什么需要这个文件：
+# GitHub 会在「仓库连续 60 天没有任何提交」时，自动把所有 scheduled workflow 置为
+# disabled_inactivity，而且不会发提醒。本项目最后一次提交是 2026-07-06，
+# 两个定时 workflow 就在 2026-09-05 被自动停用，同步从此彻底停止、无人察觉。
+# 这个 workflow 每月制造一次极小的提交，让仓库始终保持"有活动"，从而保住上面的定时同步。
+#
+# 说明：本 workflow 自身也是定时的，但它每 30 天就会产生一次提交，
+# 间隔小于 60 天，因此它自己不会被这个规则停掉（自维持）。
+on:
+  schedule:
+    # 每月 1 日 03:17 UTC（北京时间 11:17），错开整点高峰
+    - cron: '17 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 写心跳时间戳并提交
+        run: |
+          mkdir -p .keepalive
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive/last_run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive/last_run.txt
+          if git diff --staged --quiet; then
+            echo "本次无变更，跳过提交"
+          else
+            git commit -m "chore(keepalive): 保持仓库活动，防止定时 workflow 被自动停用 [skip ci]"
+            git push
+          fi

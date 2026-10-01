@@ -1,30 +1,83 @@
-﻿name: Auto Sync WeRead Notes to Notion
+name: Auto Sync WeRead Notes to Notion
 
 on:
   schedule:
-    # 每天北京时间上午 8 点（UTC 0:00）
-    - cron: '0 0 * * *'
+    # 每 6 小时一次：UTC 0 / 6 / 12 / 18 == 北京时间 8:00 / 14:00 / 20:00 / 次日 2:00。
+    # 为什么是 6 小时（原为每天 1 次）：
+    #   1) 微信读书笔记不需要秒级实时，6 小时足够做到"当天读当天进 Notion"；
+    #   2) 每天 1 次时，某一天失败就等于整整天没同步；每 6 小时一次等于每天有 4 次自愈机会，
+    #      对 2026-09-05 遇到的那种网关偶发 RemoteDisconnected 特别有效；
+    #   3) 单轮运行本身就要 8 分钟以上（8 本书），间隔太密只会放大网关压力，6 小时是个安全的折中；
+    #   4) public 仓库的 GitHub-hosted 分钟数不计费，成本上没有顾虑。
+    - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只校验 WEREAD_API_KEY 与数据可达性，不写 Notion'
+        type: boolean
+        default: false
+
+# 旧版本没有 concurrency：上一轮还没跑完时新的一轮可能叠加进来，同时写同一批 Notion 页面。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
+
+      # 快速失败：凭据缺失时立刻报错，不要等到同步到一半才发现。
+      # 只判断"有没有"，绝不打印任何取值。
+      - name: 预检 Secrets 是否齐全（只看名称）
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PAGE: ${{ secrets.NOTION_PAGE }}
+          WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
+        run: |
+          missing=0
+          for name in NOTION_TOKEN NOTION_PAGE WEREAD_API_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=缺少 Secret::$name 未配置，请到 Settings > Secrets and variables > Actions 添加"
+              missing=1
+            else
+              echo "✓ $name 已配置"
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
+
+      # 把实际解析到的依赖版本写进 Job Summary。2026-07 那次"每本书都报 pages.patch 不存在"
+      # 就是 notion-client 版本漂移导致的，留下版本记录能一眼看出是不是又漂了。
+      - name: 记录依赖实际解析版本
+        run: |
+          {
+            echo "### 依赖实际解析版本"
+            echo '```'
+            pip freeze
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 纯逻辑单测（不联网、不碰 Notion）：进度换算、去重比较、属性生成。
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
       - name: Configure environment
         run: |
           cat > .env << EOF
@@ -32,6 +85,30 @@ jobs:
           NOTION_PAGE=${{ secrets.NOTION_PAGE }}
           WEREAD_API_KEY=${{ secrets.WEREAD_API_KEY }}
           EOF
-          
+
       - name: Run sync
+        env:
+          WEREAD_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: python -m weread2notionpro
+
+      # 失败时必须给出"该怎么办"，而不是只留一片红。
+      - name: 失败时给出排查指引
+        if: failure()
+        run: |
+          {
+            echo "## ❌ 同步失败，需要处理"
+            echo ""
+            echo "按日志里的报错对号入座："
+            echo ""
+            echo "| 日志关键字 | 原因 | 要做什么 |"
+            echo "| --- | --- | --- |"
+            echo "| \`WeReadAuthError\` / \`API Key 可能已失效\` | 微信读书 API Key 失效 | 打开 https://weread.qq.com/r/weread-skills 重新扫码获取 Key，更新 Secret \`WEREAD_API_KEY\` |"
+            echo "| \`unauthorized\` / \`NOTION_TOKEN\` | Notion Token 失效 | 重新生成 integration token，更新 Secret \`NOTION_TOKEN\` |"
+            echo "| \`archived ancestor\` | Notion 页面/数据库被归档 | 到 Notion 把对应页面取消归档 |"
+            echo "| \`RemoteDisconnected\` | 微信读书网关偶发断连 | 脚本已自动重试 4 次；仍失败等下一轮（6 小时后）通常自愈 |"
+            echo "| \`缺少 Secret\` | Secret 被删或改名 | 按提示补回 |"
+            echo ""
+            echo "> ⚠️ 别放着不管：仓库连续 60 天没有任何提交时，GitHub 会自动停用所有定时 workflow。"
+            echo "> 本项目在 2026-09-05 就是这么被静默停用的（\`disabled_inactivity\`）。"
+            echo "> 补一次提交或手动点 Actions 里的 \`Enable workflow\` 可以恢复。"
+          } >> "$GITHUB_STEP_SUMMARY"

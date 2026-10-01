@@ -54,8 +54,11 @@ def main():
     read_times = api_data.get('readTimes', {})
     read_times = {int(k): int(v) for k, v in read_times.items()}
     if not read_times:
-        print('Warning: No read time data from API')
-        return
+        # 旧实现在这里直接 return（退出码 0），于是"接口没数据"和"同步成功"在 Actions 上
+        # 长得一模一样，连续失败 60 天都不会有人发现。改为显式报错并返回非 0。
+        print('::error title=阅读时长数据为空::微信读书返回的 readTimes 为空，'
+              '可能是 WEREAD_API_KEY 失效或接口有变更')
+        return 1
     now = pendulum.now('Asia/Shanghai').start_of('day')
     today_ts = now.int_timestamp
     if today_ts not in read_times:
@@ -86,7 +89,14 @@ def main():
             ts_date = format_date(datetime.utcfromtimestamp(key) + timedelta(hours=8), '%Y年%m月%d日')
             print(f'  Created: {ts_date} duration {value}')
     print(f'Done: updated {updated}, created {created}')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        sys.exit(main() or 0)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f'::error title=阅读时长同步失败::{type(exc).__name__}: {exc}')
+        sys.exit(1)
