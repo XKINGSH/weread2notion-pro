@@ -306,6 +306,55 @@ class WeReadApi:
         """获取阅读进度"""
         return self._post("/book/getprogress", bookId=book_id)
 
+    # /book/getprogress 的真实字段名与早期代码里的猜测不一致（2026-10-01 实测确认）：
+    #   真名：progress(0-100) / readingTime(秒) / finishTime / startReadingTime / updateTime
+    #   旧代码读的是 readingProgress / markedStatus / totalReadDay / beginReadingDate / lastReadingDate
+    # 于是这些字段全部解析成 0，写回 Notion 时把已有的进度值覆盖成了 0。
+    PROGRESS_ALIASES = (
+        ("readingTime", ("readingTime",)),
+        ("progress", ("progress", "readingProgress")),
+        ("finishTime", ("finishTime", "finishedDate")),
+        ("startReadingTime", ("startReadingTime", "beginReadingDate")),
+        ("updateTime", ("updateTime", "lastReadingDate")),
+        ("markedStatus", ("markedStatus",)),
+        ("totalReadDay", ("totalReadDay",)),
+    )
+
+    @staticmethod
+    def _flatten_progress(data):
+        """把 /book/getprogress 的返回拍平成一层：顶层优先，其次 book / readDetail / bookInfo。"""
+        flat = {}
+        if not isinstance(data, dict):
+            return flat
+        layers = [data]
+        for key in ("book", "readDetail", "bookInfo"):
+            inner = data.get(key)
+            if isinstance(inner, dict):
+                layers.append(inner)
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            for key, value in layer.items():
+                if value is None or value == "" or value == {}:
+                    continue
+                flat.setdefault(key, value)
+        return flat
+
+    def get_book_progress(self, bookId):
+        """读一本书的真实阅读进度。
+
+        只返回**接口确实给出**的字段（键不存在就是拿不到）。调用方据此决定写不写，
+        从而避免"拿不到 → 写成 0 → 把 Notion 里的好数据覆盖掉"这个老问题。
+        """
+        flat = self._flatten_progress(self._post("/book/getprogress", bookId=bookId))
+        result = {"bookId": bookId}
+        for canonical, aliases in self.PROGRESS_ALIASES:
+            for alias in aliases:
+                if alias in flat:
+                    result[canonical] = flat[alias]
+                    break
+        return result
+
 
     # ========== 兼容原版 weread_api.py 的方法名 ==========
     
@@ -314,49 +363,41 @@ class WeReadApi:
         return self.get_book_info(bookId)
     
     def get_read_info(self, bookId):
-        """获取阅读详情（兼容原版方法名）
-        通过 /book/getprogress 获取进度数据
-        同时尝试从 /user/notebooks 获取日期信息
+        """获取阅读详情（兼容原版方法名）。
+
+        字段按 /book/getprogress 的真实返回映射（progress / finishTime /
+        startReadingTime / updateTime），**拿不到的字段不放进返回值**，
+        避免下游用 0 覆盖 Notion 里已有的值。
         """
-        data = self._post("/book/getprogress", bookId=bookId)
-        result = {
-            "readingTime": data.get("readingTime", 0),
-            "totalReadDay": data.get("totalReadDay", 0),
-            "readingProgress": data.get("readingProgress", 0),
-            "markedStatus": data.get("markedStatus", 1),
-            "beginReadingDate": data.get("beginReadingDate", ""),
-            "lastReadingDate": data.get("lastReadingDate", ""),
-            "finishedDate": data.get("finishedDate", ""),
-            "readDetail": data.get("readDetail", {}),
-            "bookInfo": data.get("bookInfo", {}),
-        }
-        # 如果日期字段为空，尝试从 /user/notebooks 获取
-        if not result["beginReadingDate"] or not result["lastReadingDate"]:
-            notebooks = self.get_notebooklist()
-            for nb in notebooks:
-                if nb.get("bookId") == bookId:
-                    book_obj = nb.get("book", {})
-                    if not result["beginReadingDate"] and book_obj.get("beginReadingDate"):
-                        result["beginReadingDate"] = book_obj["beginReadingDate"]
-                    if not result["lastReadingDate"] and book_obj.get("lastReadingDate"):
-                        result["lastReadingDate"] = book_obj["lastReadingDate"]
-                    if not result["finishedDate"] and book_obj.get("finishedDate"):
-                        result["finishedDate"] = book_obj["finishedDate"]
-                    break
-        # 如果还是没有，尝试从 /shelf/sync 获取
-        if not result["beginReadingDate"] or not result["lastReadingDate"]:
-            shelf = self.get_shelf()
-            for bp in shelf.get("bookProgress", []):
-                if bp.get("bookId") == bookId:
-                    if not result["beginReadingDate"] and bp.get("beginReadingDate"):
-                        result["beginReadingDate"] = bp["beginReadingDate"]
-                    if not result["lastReadingDate"] and bp.get("lastReadingDate"):
-                        result["lastReadingDate"] = bp["lastReadingDate"]
-                    if not result["finishedDate"] and bp.get("finishedDate"):
-                        result["finishedDate"] = bp["finishedDate"]
-                    break
+        progress_info = self.get_book_progress(bookId)
+        result = {}
+        if progress_info.get("readingTime") is not None:
+            result["readingTime"] = progress_info["readingTime"]
+        if progress_info.get("progress") is not None:
+            result["readingProgress"] = progress_info["progress"]
+        if progress_info.get("markedStatus") is not None:
+            result["markedStatus"] = progress_info["markedStatus"]
+        if progress_info.get("totalReadDay") is not None:
+            result["totalReadDay"] = progress_info["totalReadDay"]
+        if progress_info.get("startReadingTime"):
+            result["beginReadingDate"] = progress_info["startReadingTime"]
+        if progress_info.get("updateTime"):
+            result["lastReadingDate"] = progress_info["updateTime"]
+        if progress_info.get("finishTime"):
+            result["finishedDate"] = progress_info["finishTime"]
+
+        # /user/notebooks 里还有 markedStatus / readingProgress，作为补充（已带缓存，不额外打网关）
+        if result.get("markedStatus") is None or result.get("readingProgress") is None:
+            for nb in self.get_notebooklist() or []:
+                if not isinstance(nb, dict) or nb.get("bookId") != bookId:
+                    continue
+                if result.get("markedStatus") is None and nb.get("markedStatus") is not None:
+                    result["markedStatus"] = nb.get("markedStatus")
+                if result.get("readingProgress") is None and nb.get("readingProgress") is not None:
+                    result["readingProgress"] = nb.get("readingProgress")
+                break
         return result
-    
+
     def get_url(self, book_id):
         """生成微信读书阅读链接"""
         return f"https://weread.qq.com/web/reader/{book_id}"

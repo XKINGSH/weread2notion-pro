@@ -686,6 +686,12 @@ class NotionHelper:
             raise
 
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def update_block(self, block_id, payload):
+        """更新某个块的正文（书籍摘要块用；对应 Notion 的 blocks.update）。"""
+        self._throttle()
+        return self.client.blocks.update(block_id=block_id, **payload)
+
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def get_all_book(self):
         """从Notion中获取所有的书籍"""
         results = self.query_all(self.book_database_id)
@@ -724,6 +730,10 @@ class NotionHelper:
                 ),
                 "最后阅读时间": get_property_value(
                     result.get("properties", {}).get("最后阅读时间")
+                ),
+                # 供书籍摘要块判断"要不要再问一次网关要简介"
+                "简介": get_property_value(
+                    result.get("properties", {}).get("简介")
                 ),
             }
         return books_dict

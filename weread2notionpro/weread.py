@@ -2,6 +2,7 @@ import os
 import sys
 import traceback
 
+from weread2notionpro.book_summary import ensure_summary_block
 from weread2notionpro.notion_helper import NotionHelper
 from weread2notionpro.weread_api import WeReadApi, WeReadApiError, WeReadAuthError
 from notion_client import errors as notion_errors
@@ -20,6 +21,47 @@ from weread2notionpro.utils import (
 
 RATING_MAP = {"poor": "\u2b50\ufe0f", "fair": "\u2b50\u2b50\u2b50", "good": "\u2b50\u2b50\u2b50\u2b50\u2b50"}
 BOOK_ICON_URL = "https://www.notion.so/icons/book_gray.svg"
+
+
+def _maybe_number(value):
+    """取数字；拿不到（None / 空 / 非数字）返回 None —— 用 None 表示"接口没给"。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _resolve_reading_state(book_data):
+    """从 book_data 解析 (阅读状态, 阅读进度, 阅读时长, 阅读天数)。
+
+    规则与 progress.py 一致：``markedStatus == 4`` 或 ``finishedDate > 0`` → 已读（进度 100）；
+    否则阅读时长 ≥ 60 秒 → 在读；其余 → 想读。
+    **拿不到的字段返回 None**，由调用方决定不写，绝不补 0。
+    """
+    marked_status = _maybe_number(book_data.get("markedStatus"))
+    finished_ts = _maybe_number(book_data.get("finishedDate")) or 0
+    finished = marked_status == 4 or finished_ts > 0
+
+    reading_time = _maybe_number(book_data.get("readingTime"))
+    total_read_day = _maybe_number(book_data.get("totalReadDay"))
+
+    raw_progress = book_data.get("readingProgress")
+    progress = None
+    if raw_progress is not None and raw_progress != "":
+        try:
+            progress = 100.0 if finished else round(float(raw_progress) / 100.0, 4)
+        except (ValueError, TypeError):
+            progress = None
+
+    if finished:
+        status = "已读"
+    elif reading_time is None:
+        status = None
+    else:
+        status = "在读" if reading_time >= 60 else "想读"
+    return status, progress, reading_time, total_read_day
 def get_bookmark_list(page_id, bookId):
     """获取我的划线"""
     filter = {
@@ -269,11 +311,12 @@ def insert_book_to_notion(book_data, cover, page_id, bookId, title, sort):
     except (ValueError, TypeError):
         properties["Sort"] = {"number": 0}
     
-    # 阅读状态
-    status = book_data.get("阅读状态", "想读")
-    if not isinstance(status, str):
-        status = str(status) if status else "想读"
-    properties["阅读状态"] = {"status": {"name": status}}
+    # 阅读状态：拿不到就整条不写（旧实现默认"想读"，会把已读完的书改错）
+    status = book_data.get("阅读状态")
+    if status:
+        if not isinstance(status, str):
+            status = str(status)
+        properties["阅读状态"] = {"status": {"name": status}}
     
     # 阅读时长
     rt = book_data.get("阅读时长")
@@ -420,6 +463,14 @@ def ensure_book_in_notion(book):
     book_info = weread_api.get_book_info(bookId)
     book_data = book_info if book_info else book.get("book", {})
     note_data = book.get("book", {})
+
+    # /book/info 只有书籍元信息（书名/作者/封面/简介/评分…），**没有**阅读数字；
+    # 阅读时长与进度必须另外取 /book/getprogress，否则新建页面的这些属性只能填 0。
+    read_info = weread_api.get_read_info(bookId) if hasattr(weread_api, "get_read_info") else {}
+    if isinstance(read_info, dict):
+        for key, value in read_info.items():
+            if value is not None and value != "":
+                book_data[key] = value
     
     title = book_data.get("title", note_data.get("title", ""))
     author_name = book_data.get("author", note_data.get("author", ""))
@@ -430,25 +481,26 @@ def ensure_book_in_notion(book):
     begin_date = book_data.get("beginReadingDate", "")
     last_date = book_data.get("lastReadingDate", "")
     finished_date = book_data.get("finishedDate", "")
-    reading_time = book_data.get("readingTime", 0)
-    total_read_day = book_data.get("totalReadDay", 0)
+    reading_time = _maybe_number(book_data.get("readingTime"))
+    total_read_day = _maybe_number(book_data.get("totalReadDay"))
     new_rating = book_data.get("newRating", "")
     rating_detail = book_data.get("newRatingDetail", {})
-    marked_status = book_data.get("markedStatus", 1)
-    reading_progress = book_data.get("readingProgress", 0)
-    
-    # 计算阅读状态
-    status = "想读"
-    if marked_status == 4:
+    marked_status = _maybe_number(book_data.get("markedStatus"))
+    finished_ts = _maybe_number(book_data.get("finishedDate")) or 0
+    reading_progress = _maybe_number(book_data.get("readingProgress"))
+    finished = marked_status == 4 or finished_ts > 0
+
+    # 计算阅读状态：拿不到阅读数字时不写这个属性（宁可不写，也不改成"想读"）
+    status = None
+    if finished:
         status = "已读"
-    elif reading_time >= 60:
-        status = "在读"
-    
+    elif reading_time is not None:
+        status = "在读" if reading_time >= 60 else "想读"
+
     # 计算阅读进度
-    try:
-        read_progress = 100 if marked_status == 4 else float(reading_progress or 0) / 100
-    except (ValueError, TypeError):
-        read_progress = 0
+    read_progress = None
+    if reading_progress is not None:
+        read_progress = 100.0 if finished else round(reading_progress / 100.0, 4)
     
     # 评分映射
     rating_map = {"poor": "⭐️", "fair": "⭐️⭐️⭐️", "good": "⭐️⭐️⭐️⭐️⭐️"}
@@ -465,11 +517,16 @@ def ensure_book_in_notion(book):
         "书名": {"title": [{"text": {"content": title}}]},
         "BookId": {"rich_text": [{"text": {"content": bookId}}]},
         "Sort": {"number": book.get("sort", 0)},
-        "阅读状态": {"status": {"name": status}},
-        "阅读时长": {"number": reading_time},
-        "阅读天数": {"number": total_read_day},
-        "阅读进度": {"number": read_progress},
     }
+    # 进度类属性只在真的拿到数据时才写（旧实现写 0，会把已有的好数据覆盖掉）
+    if status:
+        properties["阅读状态"] = {"status": {"name": status}}
+    if reading_time is not None:
+        properties["阅读时长"] = {"number": reading_time}
+    if total_read_day is not None:
+        properties["阅读天数"] = {"number": total_read_day}
+    if read_progress is not None:
+        properties["阅读进度"] = {"number": read_progress}
     
     # 封面（替换 /s_ 为 /t7_）
     if cover:
@@ -557,6 +614,17 @@ def ensure_book_in_notion(book):
     )
     page_id = response.get("id")
     print(f"  自动创建书籍页面: {title} (ID: {page_id})")
+    try:
+        from weread2notionpro.book_summary import notebook_note_stats
+
+        for stat_key, stat_value in notebook_note_stats(weread_api, bookId).items():
+            book_data.setdefault(stat_key, stat_value)
+    except Exception as exc:  # 统计拿不到不影响建页
+        print(f"  [WARN] 读取笔记统计失败：{type(exc).__name__}: {exc}")
+    try:
+        ensure_summary_block(notion_helper, page_id, book_data)
+    except Exception as exc:  # 摘要只是附加信息，不能把建页流程带崩
+        print(f"  [WARN] 写入书籍摘要失败：{type(exc).__name__}: {exc}")
     return page_id
 
 
@@ -631,6 +699,15 @@ def main(dry_run=False):
             bookmark_list = get_bookmark_list(page_id, bookId)
             reviews = get_review_list(page_id, bookId)
             print(f"  拉取到 划线 {len(bookmark_list)} 条 / 想法点评 {len(reviews)} 条")
+            # 「📖 书籍摘要」块里的"划线汇总"用本轮真的拉到的条数，以及全部笔记里
+            # 最新一条的时间；取不到就不写这一项（宁可写「未提供」，也不编数字）。
+            note_stats = {"划线数": len(bookmark_list), "想法数": len(reviews)}
+            note_times = [
+                int(item["createTime"])
+                for item in list(bookmark_list) + list(reviews)
+                if str(item.get("createTime") or "").strip().isdigit()
+            ]
+            note_stats["最近划线"] = max(note_times) if note_times else None
             if len(bookmark_list) == 0 and len(reviews) == 0:
                 print("  [WARN] 本书既无划线也无想法；若微信读书里确实有笔记，请检查 WEREAD_API_KEY 的权限范围")
             bookmark_list.extend(reviews)
@@ -673,28 +750,25 @@ def main(dry_run=False):
                         if v is not None and v != "":
                             book_data[k] = v
 
-            try:
-                ms = book_data.get("markedStatus", 1)
-                book_data["阅读进度"] = (
-                    100 if ms == 4 else float(book_data.get("readingProgress", 0) or 0) / 100
-                )
-            except (ValueError, TypeError):
-                book_data["阅读进度"] = 0
-
-            if ms == 4:
-                book_data["阅读状态"] = "已读"
-            elif book_data.get("readingTime", 0) >= 60:
-                book_data["阅读状态"] = "在读"
-            else:
-                book_data["阅读状态"] = "想读"
-
-            book_data["阅读时长"] = book_data.get("readingTime", 0)
-            book_data["阅读天数"] = book_data.get("totalReadDay", 0)
+            # 进度类属性只在**真的拿到数据**时才写。
+            # 旧实现给缺失字段补 0，把「书架」库里 50+ 本书的 阅读时长/阅读进度/阅读天数
+            # 全部改写成了 0，连读完的书都被标成"想读"（2026-10-01 实测发现）。
+            status, progress, reading_time, total_read_day = _resolve_reading_state(book_data)
+            for attr, value in (
+                ("阅读状态", status),
+                ("阅读进度", progress),
+                ("阅读时长", reading_time),
+                ("阅读天数", total_read_day),
+            ):
+                if value is None:
+                    book_data.pop(attr, None)
+                else:
+                    book_data[attr] = value
             book_data["评分"] = book_data.get("newRating", "")
             rd = book_data.get("newRatingDetail") or {}
             mrk = rd.get("myRating", "")
             book_data["我的评分"] = RATING_MAP.get(mrk, "") if mrk else ""
-            if book_data["阅读状态"] == "已读" and not book_data["我的评分"]:
+            if book_data.get("阅读状态") == "已读" and not book_data["我的评分"]:
                 book_data["我的评分"] = "未评分"
 
             book_data["时间"] = (
@@ -749,7 +823,14 @@ def main(dry_run=False):
                 book_data["链接"] = book_data["url"]
             # categories -> 分类 (already handled above as relation IDs)
             
+            for stat_key, stat_value in note_stats.items():
+                if stat_value is not None:
+                    book_data[stat_key] = stat_value
             insert_book_to_notion(book_data, cover, page_id, bookId, title, sort)
+            try:
+                ensure_summary_block(notion_helper, page_id, book_data)
+            except Exception as exc:  # 摘要只是附加信息，不能把整本书的同步带崩
+                print(f"  [WARN] 写入书籍摘要失败：{type(exc).__name__}: {exc}")
 
             print(f"  Done syncing: {title}")
             synced_count += 1
@@ -787,7 +868,8 @@ def main(dry_run=False):
             f"  读书进度：更新 {progress_summary['updated']} 本 / "
             f"无变化 {progress_summary['unchanged']} 本 / "
             f"Notion 缺页 {progress_summary['missing']} 本 / "
-            f"失败 {len(progress_summary['failures'])} 本"
+            f"失败 {len(progress_summary['failures'])} 本 / "
+            f"书籍摘要块新增 {progress_summary.get('summaries', 0)} 个"
         )
         for progress_title, progress_err in progress_summary["failures"]:
             print(f"::error title=读书进度同步失败::{progress_title}: {progress_err}")
